@@ -7,15 +7,15 @@ import {
 import { basename } from 'node:path';
 import type { MorphessRuntime } from '../runtime/runtime.js';
 import { TuiController } from './controller.js';
-import { sanitizeText, type TuiEntry, type TuiSnapshot } from './state.js';
+import { previewDetail, sanitizeText, type TuiEntry, type TuiSnapshot } from './state.js';
 import { MORPH_MARK, MORPH_MARK_SMALL, MORPH_GREEN } from './brand.js';
 import { defaultPreferences, readPreferences, rememberDraft, writePreferences, type TuiPreferences } from './preferences.js';
 import { fuzzyScore, isTheme, THEMES, tokens, type ThemeName, type TuiTheme } from './theme.js';
 
-type Client = Pick<TuiController, 'state' | 'subscribe' | 'send' | 'abort' | 'newSession' | 'switchSession' | 'sessions' | 'fork' | 'compact' | 'setMode' | 'answer' | 'diff' | 'files'>;
+type Client = Pick<TuiController, 'state' | 'subscribe' | 'send' | 'abort' | 'newSession' | 'switchSession' | 'sessions' | 'fork' | 'compact' | 'setMode' | 'answer' | 'diff' | 'files' | 'tools' | 'provider'>;
 interface MenuItem { name: string; description: string; run(): void | Promise<unknown>; }
 interface Row { box: BoxRenderable; label: TextRenderable; body: TextRenderable | MarkdownRenderable; thinking: TextRenderable; revision: number; role: string; }
-export interface TuiOptions { preferences?: TuiPreferences; stateDir?: string; demo?: boolean; launchMark?: boolean; onExit?(): void | Promise<void>; }
+export interface TuiOptions { preferences?: TuiPreferences; stateDir?: string; launchMark?: boolean; onExit?(): void | Promise<void>; }
 function syntaxStyles(p: TuiTheme): Record<string, StyleDefinitionInput> {
   return {
     default: { fg: p.text }, 'markup.heading': { fg: p.accent, bold: true }, 'markup.strong': { bold: true },
@@ -47,7 +47,7 @@ export class MorphessTui {
   #logo: TextRenderable;
   #welcomeLabel: TextRenderable;
   #welcomeHint: TextRenderable;
-  #sidebar: BoxRenderable;
+  #sidebar: ScrollBoxRenderable;
   #inspector: TextRenderable;
   #question: BoxRenderable;
   #questionText: TextRenderable;
@@ -98,12 +98,12 @@ export class MorphessTui {
     this.#welcome = new BoxRenderable(renderer, { id: 'welcome', flexGrow: 1, minHeight: 0, alignItems: 'center', justifyContent: 'center', flexDirection: 'column', overflow: 'hidden' });
     this.#logo = this.text(MORPH_MARK, this.#prefs.theme === 'light' ? p.green : MORPH_GREEN, { id: 'morph-logo', width: 28, height: 12, flexShrink: 0, selectable: false });
     this.#welcome.add(this.#logo);
-    this.#welcomeLabel = this.text('What are we building?', p.text, { height: 1, attributes: TextAttributes.BOLD, marginTop: 1 }); this.#welcome.add(this.#welcomeLabel);
-    this.#welcomeHint = this.text('Ask a question, describe a change, or inspect your workspace.', p.muted, { height: 2, textAlign: 'center', maxWidth: 62, paddingX: 1 }); this.#welcome.add(this.#welcomeHint);
+    this.#welcomeLabel = this.text('New session', p.text, { height: 1, attributes: TextAttributes.BOLD, marginTop: 1 }); this.#welcome.add(this.#welcomeLabel);
+    this.#welcomeHint = this.text('Enter a task · Ctrl+P commands · /attach path', p.muted, { height: 2, textAlign: 'center', maxWidth: 62, paddingX: 1 }); this.#welcome.add(this.#welcomeHint);
     this.#conversation.add(this.#welcome);
     this.transcript = new ScrollBoxRenderable(renderer, { id: 'transcript', flexGrow: 1, minHeight: 0, scrollY: true, scrollX: false, stickyScroll: true, stickyStart: 'bottom', viewportCulling: true, paddingX: 2, contentOptions: { flexDirection: 'column', paddingBottom: 1 }, scrollbarOptions: { showArrows: false } });
     this.#conversation.add(this.transcript);
-    this.#sidebar = new BoxRenderable(renderer, { id: 'inspector', width: 31, flexShrink: 0, border: ['left'], borderColor: p.border, paddingX: 2, paddingY: 1, backgroundColor: p.surface, flexDirection: 'column' });
+    this.#sidebar = new ScrollBoxRenderable(renderer, { scrollY: true, scrollX: false, viewportCulling: true, id: 'inspector', width: 31, flexShrink: 0, border: ['left'], borderColor: p.border, paddingX: 2, paddingY: 1, backgroundColor: p.surface, flexDirection: 'column' });
     this.#inspector = this.text('', p.muted, { wrapMode: 'word' }); this.#sidebar.add(this.#inspector); this.#main.add(this.#sidebar);
     this.#question = new BoxRenderable(renderer, { id: 'question', border: ['top'], borderColor: p.accent, paddingX: 2, paddingY: 1, flexShrink: 0, flexDirection: 'column', visible: false, maxHeight: 8 });
     this.#questionText = this.text('', p.text, { attributes: TextAttributes.BOLD, wrapMode: 'word', maxHeight: 3 });
@@ -113,7 +113,7 @@ export class MorphessTui {
     this.composer = new TextareaRenderable(renderer, {
       id: 'composer', flexGrow: 1, minHeight: 1, wrapMode: 'word', textColor: p.text, backgroundColor: p.surface,
       focusedTextColor: p.text, focusedBackgroundColor: p.surface, cursorColor: p.accent,
-      selectionBg: p.raised, selectionFg: p.text, placeholderColor: p.muted, placeholder: 'Ask Morphess to inspect, build, or fix something…',
+      selectionBg: p.raised, selectionFg: p.text, placeholderColor: p.muted, placeholder: 'Enter a task or /command',
       keyBindings: [{ name: 'return', action: 'submit' }, { name: 'return', shift: true, action: 'newline' }, { name: 'return', meta: true, action: 'newline' }],
       onSubmit: () => { void this.submit(); },
     });
@@ -122,9 +122,11 @@ export class MorphessTui {
     this.#footer = this.text('', p.muted, { id: 'shortcuts', height: 1, paddingX: 2, truncate: true }); this.root.add(this.#footer);
     this.#palette = new BoxRenderable(renderer, { id: 'palette', position: 'absolute', zIndex: 100, border: true, borderColor: p.accent, backgroundColor: p.surface, paddingX: 1, flexDirection: 'column', visible: false });
     this.#paletteTitle = this.text('', p.text, { height: 1, attributes: TextAttributes.BOLD }); this.#palette.add(this.#paletteTitle);
-    this.paletteInput = new InputRenderable(renderer, { id: 'palette-query', placeholder: 'Search commands…', textColor: p.text, backgroundColor: p.surface, focusedBackgroundColor: p.surface, cursorColor: p.accent, placeholderColor: p.muted, onSubmit: () => this.choose() });
+    this.paletteInput = new InputRenderable(renderer, { id: 'palette-query', placeholder: 'Search commands…', textColor: p.text, backgroundColor: p.surface, focusedBackgroundColor: p.surface, cursorColor: p.accent, placeholderColor: p.muted });
     this.paletteInput.on(InputRenderableEvents.ENTER, () => this.choose());
-    this.paletteInput.onContentChange = () => this.filterMenu(); this.#palette.add(this.paletteInput);
+    // Native content-change callbacks are deferred; INPUT runs before an Enter
+    // received in the same terminal batch can select a stale command.
+    this.paletteInput.on(InputRenderableEvents.INPUT, () => this.filterMenu()); this.#palette.add(this.paletteInput);
     this.paletteList = new SelectRenderable(renderer, { id: 'palette-results', flexGrow: 1, showDescription: true, wrapSelection: true, selectedBackgroundColor: p.raised, selectedTextColor: p.text, selectedDescriptionColor: p.muted, textColor: p.text, descriptionColor: p.muted, backgroundColor: p.surface });
     this.paletteList.on(SelectRenderableEvents.ITEM_SELECTED, () => this.choose()); this.#palette.add(this.paletteList);
     this.#viewer = new ScrollBoxRenderable(renderer, { id: 'detail-view', flexGrow: 1, minHeight: 0, scrollY: true, visible: false });
@@ -174,11 +176,11 @@ export class MorphessTui {
       for (const row of this.#rows.values()) row.box.destroyRecursively(); this.#rows.clear();
     }
     this.#state = state;
-    this.#model.content = `${this.options.demo ? 'DEMO · ' : ''}${state.model}  ${state.mode === 'plan' ? 'PLAN' : 'BUILD'}`;
+    this.#model.content = `${state.model}  ${state.mode === 'plan' ? 'PLAN' : 'BUILD'}`;
     this.#location.content = `${state.workspace}  /  session ${state.sessionId}`;
     const hasEntries = state.entries.length > 0;
     this.#welcome.visible = !hasEntries || this.#launchMark; this.transcript.visible = hasEntries && !this.#launchMark;
-    this.#welcomeLabel.content = this.#launchMark ? 'Resuming your workspace…' : 'What are we building?';
+    this.#welcomeLabel.content = this.#launchMark ? 'Opening session' : 'New session';
     const ids = new Set(state.entries.map(entry => entry.id));
     for (const [id, row] of this.#rows) if (!ids.has(id)) { row.box.destroyRecursively(); this.#rows.delete(id); }
     for (const entry of state.entries) this.updateRow(entry);
@@ -189,7 +191,7 @@ export class MorphessTui {
       this.#questionChoices.content = question.options.length ? question.options.map((choice, index) => `${index + 1} ${choice}`).join('   ') + '  · or type your answer' : 'Type your answer below and press Enter.';
       if (this.#lastQuestion !== question.id) { this.#lastQuestion = question.id; if (!this.#overlay) this.composer.focus(); }
     } else this.#lastQuestion = undefined;
-    this.composer.placeholder = question ? 'Your answer…' : state.busy ? 'Steer the agent while it works…' : 'Ask Morphess to inspect, build, or fix something…';
+    this.composer.placeholder = question ? 'Enter answer' : state.busy ? 'Enter steering instructions' : 'Enter a task or /command';
     const estimate = state.context?.estimatedInputTokens;
     this.#composerMeta.content = `${question ? 'ANSWER · Ctrl+R full question' : state.busy ? 'WORKING' : state.mode === 'plan' ? 'PLAN · read-only tools' : 'BUILD'}${this.#images.length ? `  ${this.#images.length} image(s) attached` : ''}  ·  ${state.policy}`;
     this.#composerBox.borderColor = question ? this.#theme.warning : this.#theme.accent;
@@ -200,7 +202,7 @@ export class MorphessTui {
       ? `~${tokens(estimate)}/${tokens(state.context!.contextWindow)} ctx` : `~${tokens(estimate)} / ${tokens(state.context!.contextWindow)} context`;
     this.#status.content = this.#notice || state.error || `${activity}  ·  ${contextLabel}  ·  ${tokens(state.usage.output)} ${compact ? 'out' : 'output'}  ·  $${state.usage.cost.toFixed(4)}`;
     const plan = state.plan.slice(0, 8).map(step => `${step.status === 'completed' ? '[x]' : step.status === 'in_progress' ? '[>]' : '[ ]'} ${step.step}`).join('\n');
-    this.#inspector.content = `SESSION ${state.sessionId}\n${basename(state.workspace)}\n\nMODEL\n${state.model}\n\nCONTEXT\n${estimate === undefined ? 'Measured after a request' : `${tokens(estimate)} / ${tokens(state.context!.contextWindow)} tokens`}\n\nUSAGE\n${tokens(state.usage.input)} input\n${tokens(state.usage.output)} output\n${tokens(state.usage.cacheRead)} cache read\n$${state.usage.cost.toFixed(4)} reported\n\n${plan ? `PLAN\n${plan}` : 'PLAN\nNo plan yet'}\n\nCtrl+B hides inspector`;
+    this.#inspector.content = `SESSION ${state.sessionId}\n${basename(state.workspace)}\n\nMODEL\n${state.model}\n\nCONTEXT\n${estimate === undefined ? 'Measured after a request' : `${tokens(estimate)} / ${tokens(state.context!.contextWindow)} tokens`}\n\nUSAGE\n${tokens(state.usage.input)} uncached input\n${tokens(state.usage.output)} output\n${tokens(state.usage.cacheRead)} cache read\n${tokens(state.usage.cacheWrite ?? 0)} cache write\n$${state.usage.cost.toFixed(4)} reported\n\n${plan ? `PLAN\n${plan}` : 'PLAN\nNo plan yet'}\n\nCtrl+B hides inspector`;
   }
 
   private updateRow(entry: TuiEntry) {
@@ -272,6 +274,8 @@ export class MorphessTui {
       case '/abort': await this.client.abort(); break;
       case '/diff': await this.showDiff(); break;
       case '/tools': this.showTools(); break;
+      case '/catalog': await this.showAgentTools(); break;
+      case '/provider': await this.showProvider(); break;
       case '/files': await this.showFiles(argument); break;
       case '/attach': {
         if (!argument) throw new Error('Use /attach /path/to/image.png');
@@ -296,6 +300,8 @@ export class MorphessTui {
       { name: 'Switch session', description: 'Search existing conversations · Ctrl+O', run: () => this.showSessions() },
       { name: this.#state.mode === 'plan' ? 'Switch to build mode' : 'Switch to plan mode', description: this.#state.mode === 'plan' ? 'Restore your previous enabled tools' : 'Inspect and plan using read-only tools', run: () => this.client.setMode(this.#state.mode === 'plan' ? 'build' : 'plan') },
       { name: 'Inspect tool activity', description: 'Read full retained tool arguments and output · Ctrl+T', run: () => this.showTools() },
+      { name: 'Inspect agent tools', description: 'Tools, code mode, MCP, schemas and policy', run: () => this.showAgentTools() },
+      { name: 'Provider settings', description: 'Endpoint, model, credential source and configuration commands', run: () => this.showProvider() },
       { name: 'Review workspace diff', description: 'Read the current Git diff', run: () => this.showDiff() },
       { name: 'Find a file', description: 'Search workspace paths and add a reference to your prompt', run: () => this.showFiles('') },
       { name: 'Fork conversation', description: 'Branch from the last committed assistant entry', run: () => this.client.fork() },
@@ -319,11 +325,12 @@ export class MorphessTui {
     this.paletteInput.placeholder = `Search ${title.toLowerCase()}…`; this.paletteInput.value = ''; this.filterMenu(); this.paletteInput.focus();
   }
   private filterMenu() {
-    this.#filtered = this.#menu.map((item, index) => ({ item, index, score: fuzzyScore(this.paletteInput.value, `${item.name} ${item.description}`) })).filter(match => match.score >= 0).sort((a, b) => b.score - a.score || a.index - b.index).map(match => match.item);
+    this.#filtered = this.#menu.map((item, index) => ({ item, index, score: fuzzyScore(this.paletteInput.value, `${item.name} ${item.description}`) })).filter(match => match.score >= 0).sort((a, b) => b.score - a.score || a.index - b.index).slice(0, 100).map(match => match.item);
     this.paletteList.options = this.#filtered.length ? this.#filtered.map((item, index) => ({ name: item.name, description: item.description, value: index })) : [{ name: 'No matches', description: 'Try another search', value: -1 }];
     this.paletteList.setSelectedIndex(0);
   }
   private choose() {
+    if (!this.#overlay || !this.paletteList.visible) return;
     const item = this.#filtered[this.paletteList.getSelectedIndex()]; if (!item) return;
     this.closeOverlay(); this.run(() => item.run());
   }
@@ -343,17 +350,31 @@ export class MorphessTui {
     this.showMenu('Tool activity', tools.map(entry => ({ name: `${entry.toolName ?? 'tool'} · ${entry.status}`, description: entry.text.replace(/\n/g, ' ').slice(0, 90), run: () => this.showText(entry.toolName ?? 'Tool', entry.detail || entry.text) })));
   }
   private async showDiff() { this.showText('Workspace diff', await this.client.diff()); }
+  private async showProvider() {
+    const provider = await this.client.provider();
+    this.showText('Provider settings', `Endpoint: ${provider.baseUrl}\nModel: ${provider.model}\nAPI: ${provider.api}\nCredential: ${provider.source}\nEnvironment variable: ${provider.apiKeyEnv}\n\nChange endpoint/model:\n  morphess configure --base-url <url> --model <id>\n\nEnter or rotate a key:\n  morphess auth login\n\nInspect credential status:\n  morphess auth status\n\nRestart the host after endpoint/model changes. Stored key updates apply to subsequent requests.`);
+  }
+  private async showAgentTools() {
+    const catalog = await this.client.tools();
+    this.showMenu(`Agent tools · session ${catalog.sessionId}`, catalog.tools.map(tool => ({
+      name: `${tool.name} · ${tool.status}`, description: tool.description,
+      run: async () => {
+        const detail = (await this.client.tools(tool.name)).tools[0];
+        if (detail) this.showText(tool.name, `${detail.description}\n\nStatus: ${detail.status}\nSource: ${detail.source}\nReplay: ${detail.replay}\n${detail.reason ?? ''}\n\n${previewDetail(detail.parameters)}`);
+      },
+    })));
+  }
   private async showFiles(query: string) {
     const paths = await this.client.files(query);
     this.showMenu('Files', paths.map(path => ({ name: path, description: 'Insert a workspace-relative file reference', run: () => { this.composer.insertText(`${this.composer.plainText ? ' ' : ''}@${path}`); } })));
   }
-  private showThemes() { this.showMenu('Themes', (Object.keys(THEMES) as ThemeName[]).map(name => ({ name: `${name === this.#prefs.theme ? '* ' : ''}${name}`, description: name === 'forest' ? 'Morph green on a quiet forest ground' : name === 'light' ? 'Bright paper with deep green text' : 'High contrast black with strong text and boundaries', run: () => this.setTheme(name) }))); }
+  private showThemes() { this.showMenu('Themes', (Object.keys(THEMES) as ThemeName[]).map(name => ({ name: `${name === this.#prefs.theme ? '* ' : ''}${name}`, description: name === 'forest' ? 'Dark green background' : name === 'light' ? 'Light background' : 'High contrast', run: () => this.setTheme(name) }))); }
   private showQuestion() {
     const question = this.#state.questions[0];
     if (!question) { this.notify('There is no pending question.'); return; }
     this.showText(`Question · session ${question.conversationId}`, `${question.question}\n\n${question.options.map((option, index) => `${index + 1}. ${option}`).join('\n\n')}\n\nEscape returns to the composer. Type a number or a freeform answer.`);
   }
-  private showHelp() { this.showText('Keyboard and commands', `Morphess is an independent, unofficial harness for Morph inference.\nIt is not developed, endorsed, sponsored, or backed by Morph.\n\nEnter          Send prompt or answer pending question\nShift+Enter    Add a new line\nCtrl+P         Search commands\nCtrl+N         New session\nCtrl+O         Switch session\nCtrl+B         Toggle inspector (wide terminals)\nCtrl+T         Inspect tools\nCtrl+Y         Copy selection or last answer\nCtrl+R         Read full pending question and choices\nCtrl+U         Clear composer\nUp / Down      Recall prompt history when composer is empty\nPageUp/Down    Scroll transcript or detail view\nEscape         Close a menu; otherwise stop current work\nCtrl+C         Stop work, or quit when idle\nCtrl+Q         Quit and preserve unfinished work\n\n/new  /sessions  /fork [entry]  /compact\n/plan  /build  /abort  /diff  /tools  /files [query]\n/attach /path/to/image.png  /theme [forest|light|contrast]\n/thinking  /answer text  /help  /quit\n\nPlan mode restricts agent tools. Build mode restores your prior selection.\nHost shell access still requires explicit --trusted or trusted configuration.\nAccepted work is durable. Closing the UI preserves unfinished tasks.\nType a number to select a suggested answer, or give a freeform reply.`); }
+  private showHelp() { this.showText('Keyboard and commands', `Morphess is an independent, unofficial harness for Morph inference.\nIt is not developed, endorsed, sponsored, or backed by Morph.\n\nEnter          Send prompt or answer pending question\nShift+Enter    Add a new line\nCtrl+P         Search commands\nCtrl+N         New session\nCtrl+O         Switch session\nCtrl+B         Toggle inspector (wide terminals)\nCtrl+T         Inspect tools\nCtrl+Y         Copy selection or last answer\nCtrl+R         Read full pending question and choices\nCtrl+U         Clear composer\nUp / Down      Recall prompt history when composer is empty\nPageUp/Down    Scroll transcript or detail view\nEscape         Close a menu; otherwise stop current work\nCtrl+C         Stop work, or quit when idle\nCtrl+Q         Quit and preserve unfinished work\n\n/new  /sessions  /fork [entry]  /compact\n/plan  /build  /abort  /diff  /tools  /catalog  /provider  /files [query]\n/attach /path/to/image.png  /theme [forest|light|contrast]\n/thinking  /answer text  /help  /quit\n\nPlan mode restricts agent tools. Build mode restores your prior selection.\nHost shell access still requires explicit --trusted or trusted configuration.\nAccepted work is durable. Closing the UI preserves unfinished tasks.\nType a number to select a suggested answer, or give a freeform reply.`); }
   private toggleSidebar() { this.#prefs.sidebar = !this.#prefs.sidebar; this.resize(); this.saveSoon(); if (this.renderer.width < 110 && this.#prefs.sidebar) this.notify('Inspector appears at 110 columns or wider.'); }
   private copyAnswer() {
     const text = this.renderer.getSelection()?.getSelectedText() || this.#state.entries.filter(entry => entry.role === 'assistant').at(-1)?.text;
@@ -435,7 +456,7 @@ export class MorphessTui {
   }
 }
 
-export async function launchTui(runtime: MorphessRuntime, options: { sessionId?: string | number; demo?: boolean } = {}) {
+export async function launchTui(runtime: MorphessRuntime, options: { sessionId?: string | number; menu?: boolean } = {}) {
   const controller = await TuiController.open(runtime, { sessionId: options.sessionId });
   let renderer: CliRenderer | undefined; let app: MorphessTui | undefined;
   let end!: () => void; const done = new Promise<void>(resolve => { end = resolve; });
@@ -443,7 +464,8 @@ export async function launchTui(runtime: MorphessRuntime, options: { sessionId?:
   try {
     const preferences = await readPreferences(runtime.config.stateDir);
     renderer = await createCliRenderer({ exitOnCtrlC: false, exitSignals: [], screenMode: 'alternate-screen', backgroundColor: THEMES[preferences.theme].background, targetFps: 24, maxFps: 30, useMouse: true, enableMouseMovement: false, consoleMode: 'disabled', openConsoleOnError: false });
-    app = new MorphessTui(renderer, controller, { preferences, stateDir: runtime.config.stateDir, demo: options.demo, launchMark: true, onExit: end });
+    app = new MorphessTui(renderer, controller, { preferences, stateDir: runtime.config.stateDir, launchMark: true, onExit: end });
+    if (options.menu) app.showCommands();
     process.once('SIGTERM', terminate); process.once('SIGHUP', terminate);
     await Promise.race([done, renderer.closed]);
   } finally {

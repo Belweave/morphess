@@ -1,74 +1,96 @@
-# Operation and limits
+# Configuration and operation
 
 ## Configuration
 
-Use `node dist/cli.js init` or copy `morphess.example.json`. Nested model, policy, limits, context, and server settings merge over defaults; unknown fields fail. Relative workspace/state/MCP working-directory paths resolve against the selected config file. Missing explicit config files fail.
+Run `morphess init` in the target workspace, then edit `morphess.json`. Use `morphess -C <directory> -c <file>` to select a workspace/configuration location. An explicitly named missing configuration file is an error.
 
-Environment overrides: `MORPHESS_BASE_URL`, `MORPHESS_MODEL`, `MORPHESS_API`, `MORPHESS_API_KEY_ENV`. The last names the credential variable. Environment files are not automatically loaded.
+Nested `model`, `policy`, `limits`, `context`, and `server` objects merge over defaults. Unknown fields fail validation. Relative workspace/state paths and MCP working directories resolve against the selected configuration file; plugin paths resolve against the workspace. Environment files are not loaded automatically.
 
-`model.api` defaults to `chat-completions`, with `responses` also available. Include the API prefix (usually `/v1`) in `baseUrl`, not the full completion path. Arbitrary model IDs register directly without public catalog discovery.
+| Setting | Behavior |
+| --- | --- |
+| `model.baseUrl` | API base URL, normally including `/v1`, without a completion path |
+| `model.id` | Exact endpoint model ID |
+| `model.api` | `chat-completions` or `responses` |
+| `model.apiKeyEnv` | Name of the credential environment variable |
+| `model.contextWindow` / `maxOutputTokens` | Supported input-window and output limits |
+| `model.input` | Text, or text and image input |
+| `model.timeoutMs` / `idleTimeoutMs` | Hard request and stream-inactivity deadlines |
+| `model.maxRetries` | Provider retries; durable transient retries remain separately bounded |
+| `model.allowUnauthenticated` | Explicitly permit a keyless endpoint |
+| `codemode` | Enable native QuickJS tool composition; defaults to `true` |
+| `plugins` / `mcp` | Explicit trusted plugin imports and MCP connections |
 
-Chat compatibility flags are `supportsStore`, `supportsDeveloperRole`, `supportsReasoningEffort`, `supportsUsageInStreaming`, and `maxTokensField` (`max_tokens` or `max_completion_tokens`). Responses uses the developer-role flag and does not reinterpret Chat options. Enable `reasoning` only for a compatible endpoint.
+Environment overrides are `MORPHESS_BASE_URL`, `MORPHESS_MODEL`, `MORPHESS_API`, and `MORPHESS_API_KEY_ENV`. The last contains a variable name, not the credential itself.
 
-`maxOutputTokens` caps the final provider payload, including after hooks. `timeoutMs` is a hard request deadline; `idleTimeoutMs` caps native stream inactivity. Provider retries default to zero; Pi permits two durable transient-error retries with backoff. All admitted attempts count toward `maxTurns`.
+Chat Completions compatibility settings are `supportsStore`, `supportsDeveloperRole`, `supportsReasoningEffort`, `supportsUsageInStreaming`, and `maxTokensField` (`max_tokens` or `max_completion_tokens`). Responses accepts the developer-role setting. Enable `reasoning` only when the endpoint supports it.
 
-## Authority
+`morphess doctor` reports resolved configuration and credential presence without contacting the model. `morphess tools --all --json` reports the installed catalog; `morphess tools <name> --session <id>` reports a specific tool and its session availability. See [MCP configuration](mcp.md) and [plugin contracts](extensions.md).
 
-| Mode | File reads | File mutations | Arbitrary shell |
+## Permissions
+
+| Policy | File reads | File mutations | Arbitrary shell |
 | --- | --- | --- | --- |
-| read-only | Workspace | Denied | Denied |
-| workspace-write | Workspace | Workspace | Denied |
-| trusted | Workspace through file tools | Workspace through file tools | Full host authority |
+| `read-only` | Workspace | Denied | Denied |
+| `workspace-write` | Workspace | Workspace | Denied |
+| `trusted` | Workspace through file tools | Workspace through file tools | Host authority |
 
-The environment rejects traversal, outside absolute paths, escaping/dangling symlinks, state-directory access, and file-tool mutations under `.git`. Narrow read capabilities use fixed absolute host Git/ripgrep executables, not workspace-controlled PATH binaries. Search has a portable bounded fallback; without ripgrep that fallback does not implement gitignore semantics. File handles must refer to regular files, reads/scans/lines are bounded, and multiply linked files cannot be mutated. Linked Git worktrees are unsupported by guarded Git helpers.
+Use `morphess --trusted run <task>` only when host command execution is intended. The policy rejects traversal, outside paths, escaping/dangling symlinks, state-directory access, file-tool writes under `.git`, nonregular-file access, and hardlink mutation. Reads and output are bounded.
 
-The configured state directory and `.morphess` are protected; tool temp output lives in `.morphess-tmp`. A hostile concurrent filesystem process can race path checks, so this is defense in depth. Trusted ESM plugins and MCP executables can access the host independently of file-tool policy. Use an external container/VM boundary for untrusted code.
+Guarded Git/ripgrep capabilities use fixed host executables rather than workspace-controlled PATH entries. The portable file-search fallback does not implement gitignore semantics. Guarded Git helpers require metadata inside the workspace and do not support linked worktrees.
 
-## Persistence
+The configured state directory and `.morphess` are protected. Temporary tool output uses `.morphess-tmp`. Filesystem checks are defense in depth against ordinary tool mistakes; they are not an OS sandbox. Trusted plugins and MCP executables can access the host directly. Use an external isolation boundary for untrusted code.
 
-SQLite lives at `<stateDir>/session.sqlite`. The directory is mode 0700 and database file 0600. Sessions can contain source, prompts, images and tool output. Credentials are not deliberately persisted, but arbitrary tool/user content can still contain secrets; comprehensive secret redaction is not claimed.
+Plan mode further narrows agent tools without changing host policy. Stop active work before entering plan mode. Build mode restores prior known tool names and does not grant additional shell authority.
 
-One process owns a state directory. Clean close releases the writer lock. After SIGKILL, allow approximately 120 seconds plus timestamp precision for stale-lock recovery. Never remove a live writer's lock. Managed hosts/tests can tune `RuntimeOptions.writerLock`; short intervals risk false takeover during event-loop stalls.
+## Persistence and recovery
 
-`resume` waits for pending work; `serve` also resumes on open. Pi retries interrupted model requests. Replay-safe calls can reattach/replay, while unsafe in-flight calls become interrupted results. Committed completed effects are not repeated. A replay-safe external tool still needs its own idempotency.
+SQLite is stored at `<stateDir>/session.sqlite`; directory/file modes are 0700/0600. Treat session databases, image artifacts, and `ui.json` as sensitive because they contain user input and tool results.
 
-Pi parks a task after five interrupted restarts at one checkpoint. Inspect through `/v1/tasks`; library hosts can diagnose and call `harness.retryTask` or `abortTask`. There is no CLI repair command yet.
+Only one host process may own a state directory. Clean close releases the writer lock. After an unclean process exit, stale-lock recovery normally waits approximately 120 seconds plus filesystem timestamp precision. Do not remove a live writer's lock. Custom `RuntimeOptions.writerLock` intervals require enough allowance for event-loop pauses.
 
-Host close preserves resumable work. Explicit session abort stops its ownership subtree. HTTP disconnect cancels only the waiter. CLI run/chat SIGINT targets the selected conversation. TUI Escape aborts the selected ownership subtree; Ctrl+Q preserves work. `serve` closes cleanly on SIGINT/SIGTERM and leaves accepted work recoverable.
+`morphess resume` resumes pending work and waits for idle. Host close preserves accepted work; explicit abort cancels its ownership subtree. A client disconnect cancels its wait rather than the accepted task. Interrupted unsafe calls become interrupted results; completed side effects are not replayed automatically.
 
-SQLite WAL/NORMAL protects against process crashes but may lose latest commits on power/machine failure. Stop the host before copying the database with its WAL files, or use an SQLite-aware backup. Copying an active database file alone is insufficient.
+Pi parks a task after five interrupted restarts at one checkpoint. Inspect tasks through `/v1/tasks`; library hosts can call `harness.retryTask` or `abortTask` after diagnosing the cause.
 
-## Budgets
+SQLite WAL/NORMAL tolerates process crashes but does not guarantee preservation of the latest commits after power loss. Stop the host before copying the database and WAL files, or use an SQLite-aware backup. Copying an active database file alone is insufficient.
 
-`maxTurns` caps request attempts per run, not lifetime tokens. Retries/compaction count. Child runs have their own counters and shared session cost reservations.
+## Request and cost limits
 
-Model-spend admission requires configured prices in dollars per million tokens:
+`limits.maxTurns` bounds model request attempts per run, including retries and compaction. Child runs have separate counters. `limits.maxConcurrentAgents` bounds delegated calls; child depth is currently one, with `maxAgentDepth: 0` disabling delegation.
+
+Configure model prices in dollars per million tokens before enabling `limits.maxSpendUsd`:
 
 ```json
 {
-  "model": { "cost": { "input": 1, "output": 3, "cacheRead": 0.1, "cacheWrite": 1 } },
+  "model": {
+    "cost": { "input": 1, "output": 3, "cacheRead": 0.1, "cacheWrite": 1 }
+  },
   "limits": { "maxSpendUsd": 20 }
 }
 ```
 
-These numbers illustrate configuration, not actual prices. Admission reserves the full input window plus output at the largest applicable input rate. It may reject a small prompt with insufficient worst-case capacity. Confirmed usage releases unused capacity; absent usage retains it across restarts. No automatic unknown-charge refund/reset command is shipped. Changing prices does not reprice previous reservations. Paid plugin/MCP services are outside this model-call ceiling.
+Replace these rates with the endpoint's actual prices. Admission reserves the full window and output at conservative rates; confirmed usage settles unused capacity. Missing usage retains the reservation across restarts. Price changes do not reprice earlier reservations, and external-service charges are outside this ceiling. `/v1/usage` exposes reported usage; the reservation ledger also accounts for in-flight and uncertain calls.
 
-`/v1/usage` exposes Pi's reported usage; the cost-reservation ledger additionally accounts for in-flight/uncertain calls. Correct rate configuration and trustworthy provider usage remain necessary.
+Prompt caching depends on the inference endpoint. Stable prompt sections and declaration order preserve cacheable prefixes, but configuration does not guarantee a cache hit rate. Inspect provider-reported cache counters when measuring the configured endpoint.
 
-## Attachments and serving
+## Attachments
 
-CLI/TUI/API inputs accept up to 16 PNG/JPEG/GIF/WebP images, each at most 4 MiB and at most 16 MiB in aggregate. Header signatures and dimensions are checked without decoding rasters. Content-addressed copies are stored in `<stateDir>/artifacts`; image blocks also remain in Pi's transcript. This is not complete transcript blob offloading. Native image reads apply Pi's image limits. Audio/video/PDF native model blocks are unsupported. OpenAI image detail low/high is rejected because Pi cannot preserve those per-image semantics; use auto or omit it.
+Input supports up to 16 PNG/JPEG/GIF/WebP images, each at most 4 MiB and at most 16 MiB total. Header signatures and dimensions are checked before submission. Content-addressed copies are kept in `<stateDir>/artifacts`, and image blocks remain in the native transcript.
 
-Default HTTP is `127.0.0.1:8787`. A non-loopback bind requires the environment token named by `server.tokenEnv`. Except minimal `/health`, routes require that token when configured. Browser Origin requests are rejected; this is a headless API without CORS UI. Add TLS and external identity controls for exposure beyond a trusted environment. The token authorizes the entire host, not an individual tenant.
+Native model blocks support text/images. OpenAI per-image `detail: low/high` is rejected because those semantics cannot be preserved; use `auto` or omit it.
 
-Bodies are limited to 24 MiB, requests/connections to 64, streams to 32. Slow SSE consumers disconnect after a 30-second backpressure wait. Reattach to control snapshots and paginate committed history. Native Pi event types are experimental.
+## HTTP hosting
 
-## Evaluation
+```sh
+morphess serve --host 127.0.0.1 --port 8787
+```
 
-`npm run check` typechecks, tests offline with two workers, and builds. `npm run eval` drives the compiled CLI against a scripted local Chat endpoint and verifies a real coding-tool result. `MORPHESS_EVAL_LARGE=1 npm run eval` adds a multi-megabyte prompt. These demonstrate harness behavior, not live coding quality or advertised 1M-token reasoning.
+Set the environment variable named by `server.tokenEnv` to require bearer authentication. Binding beyond loopback requires it. Except minimal `/health`, configured authentication applies to host routes. The token authorizes the complete host, not an individual tenant. Browser Origin requests are rejected. Use TLS and an external identity boundary when exposing the host beyond a trusted environment.
 
-## Questions and terminal preferences
+Bodies are limited to 24 MiB, requests/connections to 64, and streams to 32. Slow SSE clients disconnect after 30 seconds of backpressure. Reattach to snapshots and paginate committed history. See the [API reference](api.md).
 
-TUI and HTTP hosts support durable `ask_user` waits, including active child questions. Batch `run` and line-oriented `chat` install a native before-tool guard and prompt instruction directing fresh questions to final text, since these commands have no durable answer interface. Persisted pending questions are deliberately preserved, and arbitrary existing explicit extension selections may omit the guard. Reopen in the TUI or `serve` and answer through its native API to settle such work; `resume` can remain waiting for human input. This is host interaction guidance, not a permission boundary.
+## Human questions
 
-The TUI stores bounded draft/history preferences atomically as mode-0600 `ui.json`. They contain user text and should be protected with session databases. Plan mode and its exact saved tool selection use a native Pi conversation document. See [the terminal guide](tui.md).
+Terminal and HTTP hosts can answer durable questions, including active child questions. Batch `run` and line-oriented `chat` direct new questions to final text because they do not expose a durable answer interface. Previously persisted questions remain pending; reopen the terminal or answer through HTTP to settle them. `resume` can remain waiting for that input.
+
+A question answer does not grant shell, plugin, or external-service authority. Optional question deadlines persist through downtime. Terminal drafts/history are stored atomically in mode-0600 `ui.json`; see [terminal controls](tui.md).

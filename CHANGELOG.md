@@ -1,17 +1,25 @@
 # Changelog
 
+## 0.2.1 — 2026-10-26
+
+- Added production artifact installation with an executable npm global CLI and symlink-aware entrypoint detection.
+- Added grouped root help, command-specific examples, the command menu, and session-aware tool catalog/schema inspection.
+- Set Morph's endpoint and 1M text/image model as defaults; added configurable providers and masked, endpoint-scoped credential storage.
+- Enabled code mode by default for registered capabilities while retaining tool policy, durable nested execution, and model-call admission controls.
+- Added MCP 2026-07-28 negotiation, resource/prompt operations, OAuth management, durable task handles, verified skills, elicitation, and approved sampling; documented extension limits.
+- Stabilized outgoing tool order, exposed cache retention settings and reported cache usage, and added paused session inspection.
+- Fixed command palette selection when a search query and Enter arrive in the same terminal input batch.
+- Removed test-only provider entrypoints and public capture assets.
+- Updated installation, configuration, operation, extension, and terminal reference documentation.
+
 ## 0.2.0 — 2026-10-26
 
-- Added a native OpenTUI coding workspace with streaming Markdown, multiline editing, searchable commands/sessions/tools/files, recoverable drafts, three themes and an optional context/plan inspector.
-- Bundled green ASCII generated from Morph's official logo and clear independent/unofficial, not Morph-backed language in the terminal, CLI help and documentation.
-- Added durable human questions with suggested/freeform answers, child-agent routing and authenticated native HTTP answer endpoints.
-- Added plan/build tool restrictions with exact restoration, active-work safeguards and headless recovery coverage.
-- Fixed streaming cancellation retention, queued dispatch/abort races, SSE close/backpressure cleanup, busy status handling and MCP HTTP session termination.
-- Hardened regular-file reads/writes, hardlink mutation checks, large-file/line bounds, binary reads, search previews, protected instructions and image/artifact validation.
-- Added native terminal tests, Node 22 headless verification, real PTY smoke, reproducible stream benchmark and offline documentation captures.
-
-The native terminal requires Node 26.4+ and experimental FFI, enabled automatically by its launcher. Headless commands retain Node 22.19+ support. Live model quality, advertised 1M capacity and Linux remote CI have not been validated by these local checks.
+- Added the native OpenTUI workspace, streaming Markdown, multiline input, searchable selectors, private drafts/history, themes, and optional inspector.
+- Added durable human questions, child-question routing, and authenticated HTTP answers.
+- Added plan/build restrictions with exact tool restoration and headless recovery.
+- Hardened cancellation, request admission, SSE cleanup, regular-file access, protected state, binary reads, and image validation.
+- Added native terminal, transport, policy, concurrency, and recovery tests.
 
 ## 0.1.0
 
-Initial durable multimodal coding harness built directly on Pi Durable 1.4.0.
+- Added durable coding tasks, SQLite recovery, text/image model input, plugins, MCP tools, and task-owned delegation on Pi Durable 1.4.0.

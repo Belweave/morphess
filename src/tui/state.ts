@@ -25,7 +25,7 @@ export interface TuiSnapshot {
   entries: TuiEntry[];
   questions: UserQuestion[];
   plan: Array<{ step: string; status: string }>;
-  usage: { input: number; output: number; cacheRead: number; cost: number };
+  usage: { input: number; output: number; cacheRead: number; cacheWrite?: number; cost: number };
   context?: ContextBudget;
   status: string;
   error?: string;
@@ -96,10 +96,10 @@ function thinkingText(message: AssistantMessage): string {
   return sanitizeText(text);
 }
 
-function usageSummary(usage: UsageState): TuiSnapshot['usage'] {
-  const sum = { input: 0, output: 0, cacheRead: 0, cost: 0 };
+export function summarizeUsage(usage: UsageState): { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number } {
+  const sum = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
   for (const bucket of [usage.models, usage.tools]) for (const value of Object.values(bucket)) {
-    sum.input += value.input; sum.output += value.output; sum.cacheRead += value.cacheRead; sum.cost += value.cost.total;
+    sum.input += value.input; sum.output += value.output; sum.cacheRead += value.cacheRead; sum.cacheWrite += value.cacheWrite; sum.cost += value.cost.total;
   }
   return sum;
 }
@@ -198,7 +198,7 @@ export class TuiProjection {
     this.busy = this.#runActive || this.#compactions.size > 0;
     this.status = event.generation?.retry ? 'Retrying model' : this.busy ? 'Running' : 'Ready';
     this.error = event.compactionFailure ? sanitizeText(event.compactionFailure.error) : undefined;
-    this.usage = usageSummary(event.usage);
+    this.usage = summarizeUsage(event.usage);
     if (event.generation?.message) { this.#streamId = streamId; this.#start(event.generation.message); }
     for (const slot of [...event.tools.slice(-PREVIEW_LIMITS.entries), ...event.nestedTools.slice(-PREVIEW_LIMITS.entries)].slice(-PREVIEW_LIMITS.entries)) {
       if (slot.status === 'done' && this.entries.some(row => row.id === `tool:${slot.callId}`)) continue;
@@ -251,7 +251,7 @@ export class TuiProjection {
           this.#row(id, { role: 'tool', toolName: sanitizeText(event.toolName, 200), text: previous?.text ?? '', detail: previous?.detail,
             status: event.result?.isError || !event.result ? 'error' : 'done' }); break;
         }
-        case 'usage_changed': this.usage = usageSummary(event.usage); break;
+        case 'usage_changed': this.usage = summarizeUsage(event.usage); break;
         case 'task_failed': this.error = sanitizeText(event.message); this.status = 'Error'; break;
         case 'auto_retry_start': this.status = 'Retrying model'; this.error = sanitizeText(event.errorMessage); break;
         case 'auto_retry_end': this.status = 'Running'; break;

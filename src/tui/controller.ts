@@ -9,6 +9,7 @@ import {
 import { getOrThrow } from '@earendil-works/pi-durable/env';
 import type { MorphessRuntime } from '../runtime/runtime.js';
 import { withImages } from '../media/input.js';
+import { getProviderCredentialStatus, providerCredentialDirectory } from '../models/credentials.js';
 import { QuestionsDoc, answerQuestion, listQuestions, type UserQuestion } from '../interaction/index.js';
 import { WorkDoc } from '../workflow/work.js';
 import { createWorkspaceEnvironment, type WorkspaceExecutionEnv } from '../policy/workspace.js';
@@ -56,7 +57,7 @@ export class TuiController {
 
   static async open(runtime: MorphessRuntime, options: { sessionId?: string | number } = {}): Promise<TuiController> {
     const env = await createWorkspaceEnvironment({ workspace: runtime.config.workspace, mode: 'read-only',
-      maxOutputBytes: 64_000, shellTimeoutMs: 10_000, protectedPaths: [runtime.config.stateDir] });
+      maxOutputBytes: 64_000, shellTimeoutMs: 10_000, protectedPaths: [runtime.config.stateDir, providerCredentialDirectory()] });
     const controller = new TuiController(runtime, env);
     try { await controller.switchSession(options.sessionId ?? runtime.root.id); return controller; }
     catch (error) { await controller.close(); throw error; }
@@ -350,6 +351,17 @@ export class TuiController {
     const needle = query.toLocaleLowerCase('en-US');
     // Do not insert a sanitized alias that could refer to a different file.
     return listing.paths.filter(path => path.length <= 4_096 && sanitizeText(path, 4_096) === path && path.toLocaleLowerCase('en-US').includes(needle)).slice(0, 100);
+  }
+
+  async tools(name?: string) {
+    this.#assertOpen();
+    return this.runtime.toolCatalog({ sessionId: this.#conversation.id, all: true, name }, this.#context());
+  }
+
+  async provider() {
+    this.#assertOpen();
+    const { baseUrl, id, api, apiKeyEnv } = this.runtime.config.model;
+    return { baseUrl, model: id, api, apiKeyEnv, ...await getProviderCredentialStatus(this.runtime.config.model) };
   }
 
   async close(): Promise<void> {

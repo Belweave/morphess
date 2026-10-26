@@ -6,6 +6,7 @@ import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completio
 import { openAIResponsesApi } from '@earendil-works/pi-ai/api/openai-responses.lazy';
 import { raceWithAbortSignal } from '@earendil-works/pi-ai/utils/abort';
 import type { MorphessConfig } from '../config.js';
+import { readProviderCredential } from './credentials.js';
 
 export const MORPHESS_PROVIDER = 'morphess';
 
@@ -55,6 +56,21 @@ function boundedAdapter(adapter: ProviderStreams, config: MorphessConfig['model'
         const source = replacement ?? payload;
         if (typeof source !== 'object' || source === null || Array.isArray(source)) throw new Error('Model payload hook must return a JSON object');
         const body = source as Record<string, unknown>;
+        // Tool declarations are a set. Canonicalize only the request catalog, never
+        // transcript messages or tool-call/result order (Pi owns their semantics).
+        if (Array.isArray(body.tools)) {
+          const name = (tool: unknown): string => {
+            if (typeof tool !== 'object' || tool === null) return '';
+            const declaration = tool as Record<string, unknown>;
+            const fn = declaration.function;
+            return typeof declaration.name === 'string' ? declaration.name
+              : typeof fn === 'object' && fn !== null && 'name' in fn && typeof fn.name === 'string' ? fn.name : '';
+          };
+          body.tools = [...body.tools].sort((left, right) => {
+            const a = name(left); const b = name(right);
+            return a < b ? -1 : a > b ? 1 : 0;
+          });
+        }
         const cap = Math.min(options.maxTokens ?? config.maxOutputTokens, config.maxOutputTokens);
         // Sampling extensions and payload hooks cannot bypass the configured output ceiling.
         const original = payload as Record<string, unknown>;
@@ -118,8 +134,8 @@ export function createModelRuntime(config: MorphessConfig, env: NodeJS.ProcessEn
     // Pi requires numeric prices. Absent prices mean unknown, and config forbids spend limits without prices.
     cost: profile.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     ...(api === 'openai-completions'
-      ? { compat: { supportsStore: false, ...profile.compatibility } }
-      : { compat: { supportsDeveloperRole: profile.compatibility?.supportsDeveloperRole } }),
+      ? { compat: { supportsStore: false, supportsLongCacheRetention: false, ...profile.compatibility } }
+      : { compat: { supportsDeveloperRole: profile.compatibility?.supportsDeveloperRole, supportsLongCacheRetention: profile.compatibility?.supportsLongCacheRetention ?? false } }),
   };
   const adapter = api === 'openai-responses' ? openAIResponsesApi() : openAICompletionsApi();
   const provider = createProvider({
@@ -128,10 +144,12 @@ export function createModelRuntime(config: MorphessConfig, env: NodeJS.ProcessEn
       name: profile.apiKeyEnv,
       resolve: async ({ signal }) => {
         signal.throwIfAborted();
-        const key = env[profile.apiKeyEnv];
-        if (key) return { auth: { apiKey: key }, source: profile.apiKeyEnv };
+        const environmentKey = env[profile.apiKeyEnv];
+        const key = environmentKey || await readProviderCredential(profile.baseUrl, env);
+        signal.throwIfAborted();
+        if (key) return { auth: { apiKey: key }, source: environmentKey ? profile.apiKeyEnv : 'private provider credential store' };
         if (profile.allowUnauthenticated) return { auth: { apiKey: 'morphess-unauthenticated' }, source: 'explicit unauthenticated endpoint' };
-        throw new Error(`Missing ${profile.apiKeyEnv}; set it in the environment or explicitly enable model.allowUnauthenticated for a keyless endpoint`);
+        throw new Error(`Missing ${profile.apiKeyEnv}; set it in the environment, run morphess auth login, or explicitly enable model.allowUnauthenticated for a keyless endpoint`);
       },
     } },
     api: boundedAdapter(adapter, profile),

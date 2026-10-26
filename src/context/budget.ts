@@ -14,7 +14,7 @@ export function createContextSettings(config: MorphessConfig): Pick<HarnessSetti
       enabled: true, reserveTokens, keepRecentTokens: config.context.keepRecentTokens,
       backgroundTokens: Math.min(config.context.keepRecentTokens, Math.floor((config.model.contextWindow - reserveTokens - config.context.keepRecentTokens) / 4)),
     },
-    stream: { timeoutMs: config.model.timeoutMs, maxRetries: config.model.maxRetries, cacheRetention: 'short' },
+    stream: { timeoutMs: config.model.timeoutMs, maxRetries: config.model.maxRetries, cacheRetention: config.context.cacheRetention },
     // Avoid multiplying provider retries by a second retry loop. Pi persists these attempt boundaries.
     retry: { enabled: true, maxRetries: 2, baseDelayMs: 1_000, maxAgentDelayMs: 60_000 },
   };

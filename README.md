@@ -1,103 +1,107 @@
-<img src="assets/icon.svg" width="64" height="64" alt="">
-
 # Morphess
 
-A durable coding-agent harness for OpenAI-compatible models, built directly on **Pi Durable 1.4.0**. The default profile uses **Chat Completions, text/image input, and a 1,000,000-token context window**. Model ID, endpoint, output budget, prices, and compatibility flags are configurable.
+Morphess runs durable coding tasks against a configured OpenAI-compatible inference endpoint. It uses Pi Durable for conversations, tool execution, SQLite recovery, and task ownership, with a terminal UI, CLI, and HTTP API.
 
-**Morphess is an independent, unofficial harness designed to work with Morph inference. It is not developed, endorsed, sponsored, or backed by Morph.** Its name and use of Morph's logo identify the intended inference provider; they do not imply affiliation.
+**Morphess is an independent, unofficial harness for Morph inference. It is not developed, endorsed, sponsored, or backed by Morph.**
 
-Morphess runs the agent around your inference endpoint; it does not serve model weights. Version 0.2 adds a native OpenTUI coding workspace to the tested durable runtime. Live performance with your special model still needs to be measured.
+## Install from this checkout
 
-## Start
-
-The full terminal experience requires **Node 26.4 or later**, macOS or Linux, and npm. Headless CLI/API/library use supports Node **22.19.0 or later**. OpenTUI currently uses Node's experimental FFI; the launcher enables it in a child process before opening storage.
+The terminal requires Node 26.4+ on macOS or Linux. Headless commands and library use require Node 22.19+.
 
 ```sh
 npm ci --ignore-scripts
-npm run build
-node dist/cli.js init
-```
-
-Edit `morphess.json` with your endpoint and model ID. Set the environment variable named by `model.apiKeyEnv` (default `MORPHESS_API_KEY`). For a deliberately keyless local server, set `model.allowUnauthenticated` to `true`. Credentials belong in the environment.
-
-```sh
-node dist/cli.js doctor
-node dist/cli.js
-node dist/cli.js run "Inspect this repository and explain its architecture"
-```
-
-Try the complete terminal without credentials or a configured provider:
-
-```sh
-npm run tui:demo
-```
-
-This uses a temporary workspace and a scripted local provider, real file tools, durable questions, and no inference requests. See the [terminal guide](docs/tui.md) for shortcuts, themes, attachments, plan mode, and recovery.
-
-![Morphess native terminal: independent harness, green Morph ASCII emblem, focused composer](docs/screenshots/welcome.png)
-
-The default `workspace-write` policy permits workspace file edits and denies arbitrary shell execution. To run tests/builds through the agent's shell on a repository you trust:
-
-```sh
-node dist/cli.js --trusted run "Implement the requested change and run its tests"
-```
-
-`--trusted` grants host shell access. Filesystem checks and QuickJS code mode do not isolate that shell from your machine. Run the entire host in an independently isolated container/VM for untrusted workloads.
-
-## Included
-
-| Capability | Implementation |
-| --- | --- |
-| Durable execution | Pi conversations, checkpoints, submissions, tool intents, SQLite recovery and explicit replay policies |
-| Model compatibility | Native Chat Completions/Responses adapters; custom IDs, streaming tools, output caps, cancellation, hard/idle deadlines |
-| Long context | 1M profile, output reserve, usage-anchored estimates, native compaction, stable prompt sections, bounded output |
-| Coding | Read/write/edit/bash, bounded binary reads, search/listing, guarded Git status/diff, regular-file/hardlink checks and protected state |
-| Delegation | Task-owned researcher/reviewer/coder children; concurrency caps, deadlines, cancellation, restart deduplication |
-| Programmatic tools | Optional QuickJS code mode with journaled nested calls and policy enforcement |
-| Extensions | Trusted ESM plugins; stdio/HTTP MCP, deferred discovery, schema validation and lifecycle cleanup |
-| Working memory | Fork-aware plans and keyed notes retained through compaction |
-| Terminal | Native OpenTUI, streaming Markdown, multiline editor, searchable commands/sessions/tools/files, draft recovery, three themes and optional inspector |
-| Human input | Durable freeform questions, suggested choices, child-question routing and native HTTP answer API |
-| Interfaces | TUI, line-oriented chat, CLI, JSONL events, native session API, SSE and OpenAI-compatible chat gateway |
-| Resource controls | Writer locking, bounded execution, persisted request caps and conservative model-cost reservations |
-
-The design combines Pi's durable core with ideas studied in DeepSeek Harness: replaceable capabilities, explicit plugin lifecycles, role-scoped tools, progressive disclosure, and guarded execution. DeepSeek's separate runtime is not embedded. See [architecture and research](docs/architecture.md) for pinned sources and decisions.
-
-## Use
-
-```sh
-node dist/cli.js -C /path/to/project -c morphess.json run "Fix the failing parser"
-node dist/cli.js run "Implement this screenshot" --image /path/to/screenshot.png --request-id design-1 --json
-node dist/cli.js run "Inspect the project" --events
-node dist/cli.js resume
-node dist/cli.js sessions
-node dist/cli.js export root
-node dist/cli.js fork root 123
-node dist/cli.js serve --port 8787
-```
-
-Run one CLI/HTTP host per `stateDir`. Multiple clients attach through the HTTP API. Disconnect cancels a client's wait; accepted work remains durable until explicitly aborted.
-
-```sh
-curl http://127.0.0.1:8787/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -H 'Idempotency-Key: architecture-1' \
-  -d '{"model":"your-model-id","stream":true,"messages":[{"role":"user","content":"Explain the architecture"}]}'
-```
-
-Set `MORPHESS_SERVER_TOKEN` to require bearer authentication. Binding beyond loopback requires it. See [API reference](docs/api.md), [operation and limits](docs/operations.md), and [extensions/MCP](docs/extensions.md).
-
-## Verify
-
-```sh
 npm run check
-npm run eval
-MORPHESS_EVAL_LARGE=1 npm run eval
-npm run benchmark:stream
+npm pack
+npm install --global ./belweave-morphess-0.2.1.tgz --omit=dev --ignore-scripts
+export PATH="$(npm prefix --global)/bin:$PATH"
+morphess --version
+morphess --help
 ```
 
-Tests use Pi's faux provider, local OpenAI SSE/MCP fixtures, temporary SQLite databases, an actual SIGKILL subprocess, and OpenTUI's native renderer and keyboard simulation. Native terminal tests run on Node 26.4+ and skip on older headless runtimes. The eval drives the compiled CLI through a local endpoint and verifies a real file tool result. Large mode transports a multi-megabyte input. These evaluate harness mechanics, not live model intelligence or the model's true 1M-token capacity.
+Keep the npm global prefix's `bin` directory on your shell's PATH. Rebuild, pack, and install again after updating the checkout.
 
-Current boundaries: text/images only, one child-agent level, no browser UI, LSP/ACP, background teams, MCP OAuth/reconnect, or OS sandbox backend. The downstream chat gateway supports an explicit subset and owns its tools. These limits are documented rather than silently emulated.
+## Configure
 
-Repository: **private `Belweave/morphess`**. Morphess code is proprietary; upstream MIT notices are retained in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+From the project you want to work on:
+
+```sh
+morphess init
+```
+
+Edit `morphess.json` with your real endpoint and model ID. For example:
+
+```json
+{
+  "model": {
+    "baseUrl": "https://api.morphllm.com/v1",
+    "id": "morph-kimik3",
+    "api": "chat-completions",
+    "apiKeyEnv": "MORPH_API_KEY",
+    "contextWindow": 1000000,
+    "maxOutputTokens": 32768,
+    "input": ["text", "image"]
+  }
+}
+```
+
+Set the environment variable named by `model.apiKeyEnv` to your endpoint credential. For an explicitly unauthenticated local endpoint, set `model.allowUnauthenticated` to `true`. Set context and output limits to values supported by your model.
+
+```sh
+morphess auth login
+morphess doctor
+morphess
+```
+
+`doctor` checks configuration and credential presence; it does not send an inference request. The default configuration enables code mode and permits workspace file edits while denying arbitrary shell execution.
+
+## Commands
+
+```sh
+morphess tui --session root
+morphess menu
+morphess tools --all
+morphess tools read --json --session root
+morphess run "Inspect this repository and explain the parser"
+morphess run "Implement the attached layout" --image ./layout.png --json
+morphess --trusted run "Fix the parser and run its tests"
+morphess sessions
+morphess usage --json
+morphess export root
+morphess fork root 123
+morphess resume
+morphess serve --port 8787
+```
+
+Use `morphess --help` for command groups and `morphess <command> --help` for arguments and examples. `-C <directory>` selects a workspace; `-c <file>` selects a configuration file. `run --events` emits durable JSONL events; `run --request-id <key>` deduplicates admission within a conversation.
+
+`--trusted` permits commands to execute with the host process's authority. File-tool checks and code mode do not isolate host shell execution. Use a separate container or VM when host isolation is required.
+
+## Tools and interfaces
+
+| Capability | Tools or interface |
+| --- | --- |
+| Workspace files | `read`, `read_bytes`, `write`, `edit`, `list_files`, `search` |
+| Commands and Git | `bash`, `git_status`, `git_diff` |
+| Project guidance | `read_instructions`, `load_skill` |
+| Working state | `update_plan`, `remember` |
+| Human input | `ask_user`; terminal and authenticated HTTP answers |
+| Delegation | `delegate` with researcher, reviewer, or coder role |
+| Programmatic calls | `codemode` over enabled tools; `tool_search` for deferred declarations |
+| Extensions | Explicit trusted ESM plugins and configured MCP servers |
+| Integration | Native session API, SSE events, OpenAI-compatible chat gateway |
+
+Run `morphess tools --all --json` for the installed catalog and `morphess tools <name> --session <id>` for a tool's schema and availability. Shell and filesystem policy also apply to code mode and delegated calls. Code mode does not expose direct model APIs.
+
+One host process owns each `stateDir`. Closing the terminal preserves accepted work; aborting cancels the selected task subtree. Session storage contains prompts, source, attachments, and tool results and must be treated as sensitive.
+
+- [Provider configuration and credentials](docs/providers.md)
+- [Terminal controls](docs/tui.md)
+- [Configuration, permissions, recovery, and limits](docs/operations.md)
+- [Plugin, code mode, and delegation contracts](docs/extensions.md)
+- [Cache configuration and usage](docs/cache.md)
+- [MCP configuration and capabilities](docs/mcp.md)
+- [HTTP API](docs/api.md)
+- [Runtime architecture](docs/architecture.md)
+- [Verification commands](docs/validation.md)
+
+Morphess code is proprietary. Dependency notices are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

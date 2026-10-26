@@ -1,50 +1,54 @@
 # Terminal workspace
 
-Morphess is an independent, unofficial harness designed to work with Morph inference. It is not developed, endorsed, sponsored, or backed by Morph. The green ASCII emblem comes from Morph's official documentation logo, with provenance in [assets/brand](../assets/brand/README.md). Startup uses bundled data and makes no branding network requests. Restored sessions show the mark briefly; typing dismisses it immediately without losing input.
+Open the terminal with `morphess` or `morphess tui --session <id>`. Node 26.4+ and an interactive terminal are required. The launcher enables Node's experimental FFI before loading OpenTUI; headless commands do not load it.
 
-Run `node dist/cli.js` or `node dist/cli.js tui`. Use `--session <id>` to return to a specific conversation. `npm run tui:demo` opens a temporary, scripted offline workspace without credentials. Node 26.4+ is required for the native terminal; the launcher enables experimental FFI automatically. Headless commands do not load OpenTUI.
+Morphess is independent, unofficial, and not developed, endorsed, sponsored, or backed by Morph.
 
-The default is a focused coding session. The optional inspector shows the selected session, approximate context, reported usage/cost, and plan. It appears at 110 columns or wider and remembers your preference. At 60 columns, the composer, status, and essential controls remain available.
+## Navigation
 
-## Keyboard
+The workspace contains a transcript, multiline composer, and status controls. The optional context/plan inspector appears at widths of at least 110 columns. Command, session, tool, and file selectors are keyboard-searchable. Use `morphess menu` to open the CLI command menu and `morphess --help` for command reference.
 
 | Key | Action |
 | --- | --- |
-| Enter | Send, steer, or answer a pending question |
-| Shift+Enter / Alt+Enter | Insert a newline (terminal support varies) |
-| Ctrl+P | Search commands |
-| Ctrl+O / Ctrl+N | Switch / create session |
-| Ctrl+B | Toggle context/plan inspector |
-| Ctrl+T | Inspect retained tool details |
-| Ctrl+R | Read the full pending question and every suggested answer |
-| Ctrl+Y | Request terminal clipboard copy of selection or last answer |
-| Ctrl+U | Clear composer |
-| Up / Down | Prompt history when composer is empty |
-| PageUp / PageDown | Scroll transcript or detail view |
-| Escape | Close a menu first; otherwise stop current work |
-| Ctrl+C | Abort current work; quit if idle |
-| Ctrl+Q | Quit and preserve recoverable work |
+| Enter | Send input or answer the current question |
+| Shift+Enter / Alt+Enter | Insert a newline, subject to terminal support |
+| Ctrl+P | Open the command menu |
+| Ctrl+O / Ctrl+N | Switch / create a session |
+| Ctrl+B | Toggle the context/plan inspector |
+| Ctrl+T | Inspect tool activity |
+| Ctrl+R | Open the complete pending question and suggested answers |
+| Ctrl+Y | Request clipboard copy of selection or the last answer |
+| Ctrl+U | Clear the composer |
+| Up / Down | Recall input history when the composer is empty |
+| PageUp / PageDown | Scroll the transcript or detail view |
+| Escape | Close a menu; otherwise stop active work |
+| Ctrl+C | Stop active work; quit when idle |
+| Ctrl+Q | Quit while preserving recoverable work |
 
-A multiline composer keeps per-session drafts. Accepted work uses Pi Durable; quitting the TUI preserves unfinished tasks for the next host. Explicit abort cancels the selected ownership subtree. Pending questions survive a clean close/reopen, and questions from active delegated agents appear in the selected parent's workspace. Enter a suggested number or any freeform answer. Answering a question does not grant shell or plugin authority.
+Clipboard copy uses OSC52 in response to an explicit action and requires terminal support. Terminal settings control fonts, character size, and keyboard encoding.
 
-## Commands
+## Session actions
 
-`/new`, `/sessions`, `/fork [entry]`, `/compact`, `/abort`, `/diff`, `/tools`, `/files [query]`, `/attach /path/to/image.png`, `/theme [forest|light|contrast]`, `/thinking`, `/answer text`, `/help`, `/quit`.
+Available commands include `/new`, `/sessions`, `/fork [entry]`, `/compact`, `/abort`, `/diff`, `/tools`, `/catalog`, `/provider`, `/files [query]`, `/attach <path>`, `/theme [forest|light|contrast]`, `/thinking`, `/answer <text>`, `/help`, and `/quit`.
 
-`/plan` restricts the selected conversation to an explicit read-only tool allowlist. Switch while idle; `/build` restores the exact prior enabled-tool selection, subject to the same extension and execution policy. Plan mode excludes shell, code mode, unknown plugin/MCP tools, and tool search that could enable mutating tools. Delegated children inherit the restricted tools; researcher/reviewer roles narrow them further. A read-only workspace policy still applies in build mode. Trusted shell requires `--trusted` or explicit trusted configuration.
+A session keeps its own draft. Switching sessions detaches its UI observers while native work continues. Quitting preserves accepted work for a subsequent host. Explicit abort stops the selected ownership subtree. `/fork` uses the latest committed assistant entry unless an entry ID is supplied.
 
-File search inserts an `@path` reference; the model uses file tools to read it. This does not silently upload entire files. Image attachments are loaded through the bounded image validator when submitted. A failed submission keeps the draft for retry. `/thinking` reveals retained model reasoning only when the provider exposes it.
+Pending `ask_user` questions survive close/reopen. Questions from active delegated agents appear in their parent's view. Enter a suggested number or a freeform answer; an answer does not change execution permissions. `/thinking` shows retained reasoning only when the provider supplies it.
 
-Forest, light and high-contrast themes preserve semantic roles. Clipboard copy uses OSC52 only in response to a user action and requires terminal support. The terminal owns its font, text size, and keyboard encoding.
+File selection inserts an `@path` reference; file tools retrieve its contents. Image attachments are validated and loaded when input is submitted. A failed submission retains the draft.
 
-## Bounded views and privacy
+## Plan and build mode
 
-The view retains the most recent 80 display entries, 24,000 characters per message, and 64,000 characters per tool detail. It strips terminal control sequences; original source content remains available to the model and durable transcript. Full history is available through CLI export or the paginated API. Completed transcript nodes stay mounted during unrelated status/editor updates. Native watches coalesce updates at 40 ms; there is no idle polling animation.
+`/plan` restricts tools to reads, search, guarded Git inspection, guidance, human questions, working notes/plans, and restricted delegation. Stop active work before entering plan mode. Shell, file mutation, code mode, and deferred-tool loading are excluded.
 
-Drafts, prompt history, theme and sidebar preferences live in private `<stateDir>/ui.json`, written atomically. Up to six recently edited drafts and 30 bounded history items persist within a 512 KiB file budget. Older history/drafts are dropped first when that budget is reached. Treat this file as sensitive alongside session databases. Recoverable task state and conversations remain exclusively in Pi's SQLite storage. No second agent loop or journal is introduced by the UI.
+`/build` restores the previous enabled tool names that still exist in selected extensions. It preserves model-facing tool filters. A delegated child inherits the parent's restricted tools and cannot enable missing tools. Workspace policy continues to apply in both modes; switching to build does not grant shell access.
 
-## Verification
+Mode and restoration data are committed together with the native tool filter. Restrictions persist when the same session is reopened from another interface.
 
-On Node 26.4+, `npm run check` exercises the real native renderer at 120×36 and 60×20, keyboard controls, questions, draft/session transitions, theme colors, stable Markdown identity and cleanup. On older headless runtimes, native UI tests skip. `node --experimental-ffi --import tsx scripts/capture-tui.ts` recreates the documentation screenshots from the actual offline demo, including real tool execution and a durable answer.
+## Display and storage limits
 
-![Native offline demo after real file and question tools, with optional inspector](screenshots/coding.png)
+The terminal projects the most recent 80 entries, up to 24,000 characters per message and 64,000 per tool detail. It removes terminal control sequences from displayed content while preserving original source in Pi's transcript. Export full history with `morphess export <session>` or use the paginated API.
+
+Native event/document watches coalesce updates every 40 ms. Unchanged completed rows retain renderable identity. The UI does not run a separate execution loop.
+
+Private `<stateDir>/ui.json` stores theme, inspector/thinking preferences, up to six recent drafts, and up to 30 input-history items within a 512 KiB budget. Writes are atomic. Drafts and history contain user text; protect this file with session databases. Forest, light, and contrast themes retain explicit status labels.

@@ -1,32 +1,33 @@
-# Extensions, MCP, and delegation
+# Plugins, code mode, and delegation
 
-Morphess installs extensions into Pi Durable's native registry. Pi owns tool validation, durable tasks, conversation state, and recovery. Extensions add tools, prompt sections, hooks, wrappers, or native task definitions; they do not need another agent loop.
+Morphess registers capabilities in Pi Durable. Tools use native schema validation, task ownership, execution intents, and recovery.
 
 ## Trusted ESM plugins
 
-List plugins explicitly in `morphess.json`:
+Configure explicit module imports in `morphess.json`:
 
 ```json
-{
-  "plugins": ["./plugins/digest.mjs"]
-}
+{ "plugins": ["./plugins/digest.mjs"] }
 ```
 
-Relative plugin paths resolve from the configured workspace. Absolute paths are accepted. Bare package specifiers use Node's normal package resolution from the loader module; install the package where that resolution can find it. HTTP and data URL imports are rejected. Nothing scans the workspace for plugins automatically.
+Relative paths resolve from the workspace. Absolute paths are accepted. Bare specifiers use Node resolution from the Morphess loader module; install packages where that resolution can find them. HTTP and data URL imports are rejected. There is no automatic workspace plugin discovery.
 
-Each module must export a named `createExtension` factory. A default export alone is insufficient. The factory receives the resolved workspace and may return synchronously or asynchronously:
+A module must export a named `createExtension({ workspace })` factory. It may synchronously or asynchronously return either a native `Extension` or a bundle:
 
 ```ts
 import type { Extension } from '@earendil-works/pi-durable';
 
-export function createExtension(options: { workspace: string }):
-  | Extension
-  | { extensions: Extension[]; close?(): Promise<void> | void };
+type PluginResult = Extension | {
+  extensions: Extension[];
+  close?(): Promise<void> | void;
+};
 ```
 
-The same union may be wrapped in a `Promise`. Use the bundle form when a plugin needs several extensions or a cleanup hook. Extension names must be nonempty and unique across the configured plugins. Pi additionally checks duplicate tools within an extension, prompt section keys, and native task definitions.
+The factory receives a resolved workspace path. Bundle cleanup hooks run in reverse order on close or a later load failure. If acquisition fails before the factory returns a cleanup handle, the factory must release its own partial resources. Factories run on each runtime open; imports follow normal ESM caching. Changes require reopening the host.
 
-This complete JavaScript plugin exposes a pure tool with validated input and structured output. Save it as `plugins/digest.mjs`:
+Extension names must be nonempty and unique across configured plugins. Each tool must declare `replay: 'safe'` or `replay: 'unsafe'`; omission fails loading. Pi validates duplicate tools, prompt sections, and task definitions. Reserve existing application/tool names for their owners.
+
+This local ESM plugin implements a pure tool with TypeBox input and structured output:
 
 ```js
 import { createHash } from 'node:crypto';
@@ -34,137 +35,69 @@ import { Type } from '@earendil-works/pi-ai';
 import { defineExtension, defineTool } from '@earendil-works/pi-durable';
 
 export function createExtension({ workspace }) {
-  const digest = defineTool({
-    name: 'digest_text',
-    description: 'Return the SHA-256 digest of supplied UTF-8 text.',
-    parameters: Type.Object({
-      text: Type.String({ maxLength: 100_000 }),
-    }, { additionalProperties: false }),
-    structuredOutputSchema: Type.Object({ sha256: Type.String() }),
-    // Pure computation: a crash may safely repeat it with the same arguments.
-    replay: 'safe',
-    async execute({ text }, api, context) {
-      context.abortSignal?.throwIfAborted();
-      const value = {
-        sha256: createHash('sha256').update(text, 'utf8').digest('hex'),
-      };
-      return {
-        output: [{ type: 'text', text: JSON.stringify(value) }],
-        structuredOutput: value,
-      };
-    },
+  return defineExtension({
+    name: 'digest-plugin',
+    tools: [defineTool({
+      name: 'digest_text',
+      description: 'Return the SHA-256 digest of UTF-8 text.',
+      parameters: Type.Object({
+        text: Type.String({ maxLength: 100_000 }),
+      }, { additionalProperties: false }),
+      structuredOutputSchema: Type.Object({ sha256: Type.String() }),
+      replay: 'safe',
+      async execute({ text }, api, context) {
+        context.abortSignal?.throwIfAborted();
+        const value = {
+          sha256: createHash('sha256').update(text, 'utf8').digest('hex'),
+        };
+        return {
+          output: [{ type: 'text', text: JSON.stringify(value) }],
+          structuredOutput: value,
+        };
+      },
+    })],
   });
-
-  return defineExtension({ name: 'example-digest', tools: [digest] });
 }
 ```
 
-The factory can use `workspace` to configure a tool, and `api` exposes invocation-scoped Pi operations. Prefer `api.env` for workspace access and propagate `context` to cancellable operations. The example imports Node directly to emphasize the plugin's actual authority: trusted plugin code runs in the Morphess Node process and can access host files, environment variables, processes, and the network. Workspace policy does not sandbox imports or prevent a plugin from bypassing `api.env`. Reserve application extension and built-in tool names for their existing owners; registry overrides are executable changes to runtime behavior.
+The plugin must resolve its own imports: declare dependencies in its package or install them alongside a local plugin. The host's global CLI installation does not make its dependencies globally importable from arbitrary workspace modules.
 
-Every plugin tool must explicitly declare `replay: 'safe'` or `replay: 'unsafe'`. The loader rejects tools that omit it. Use `unsafe` for non-idempotent effects, including remote mutations, messages, and process execution that can change external state. A `safe` declaration authorizes Pi to rerun an interrupted invocation; it is a contract the plugin author must justify. Pi does not rerun completed tool tasks. An interrupted unsafe call reports uncertainty rather than automatically repeating its effect.
+Trusted imports execute with the Node process's host authority, including files, processes, environment, and network. Prefer `api.env` for workspace operations and propagate `context` to cancellable calls. Workspace policy does not sandbox direct Node imports.
 
-For composed operations, use native task ownership, transactional `api.commit`, durable memos, and keyed `api.executeTool` calls where appropriate. Each nested tool retains its own replay policy. Returning success from an external operation and then crashing before its result commits remains an uncertain outcome; a local success flag cannot provide exactly-once execution at a remote service.
+## Replay and lifecycle
 
-The factory runs for each runtime open, while module imports retain normal ESM caching. The loader does not hot reload modules. Bundle cleanup hooks run in reverse load order when the runtime closes or a later plugin fails to load; the loader attempts all registered cleanups and aggregates failures. Cleanup is idempotent at the loader level. If a factory fails before returning its bundle, that factory must release any resources it already acquired.
+A `safe` declaration allows an interrupted invocation to rerun. Use it for pure computation, side-effect-free reads, or native durable construction with justified deduplication. Non-idempotent external effects must use `unsafe`. Pi reuses completed tasks; an interrupted unsafe effect becomes an interrupted result instead of being automatically reissued.
 
-The programmatic entry point is:
+Use native task ownership, `api.commit`, memos, and keyed `api.executeTool` for composition. Every nested call retains its own replay policy. A process can fail after a remote effect succeeds but before the result commits; local checkpoints alone cannot guarantee exactly-once remote execution.
 
-```ts
-loadExtensions(specifiers: string[], { workspace: string })
-// Promise<{ extensions: Extension[]; close(): Promise<void> }>
-```
+`loadExtensions(specifiers, { workspace })` returns `{ extensions, close }`. `MorphessRuntime` installs those extensions and owns cleanup. Plugin configuration, tool arguments/results, and session state must not contain credentials that belong in the host environment.
 
-The runtime installs the returned extensions and owns the returned cleanup handle.
+## MCP
 
-## MCP servers
+Configured MCP capabilities enter the same registry and are available to native tool execution and code mode, subject to enabled-tool selection and host policy. Use `morphess tools --all --json` to inspect installed names and `morphess tools <name> --session <id>` for schemas and availability.
 
-MCP configuration is a strict union selected by `transport`. Unknown fields are rejected. Server names must be nonempty and unique. These are the supported fields:
+See [MCP configuration and protocol capabilities](mcp.md) for transports, authentication references, discovery, resources, prompts, and task operations. The MCP reference is the source of truth for supported protocol features and their limits.
 
-| Transport | Required fields | Optional fields and defaults |
-| --- | --- | --- |
-| `stdio` | `transport`, `name`, `command` | `args: []`, `env: {}`, `cwd`, `timeoutMs: 30000` |
-| `http` | `transport`, `name`, `url` | `headers: {}`, `timeoutMs: 30000` |
+## Code mode
 
-`command`, `name`, and an optional `cwd` are nonempty strings. `args` is an array of strings. `timeoutMs` is a positive safe integer in milliseconds. HTTP URLs must use `http:` or `https:` without a username or password. `http` uses MCP Streamable HTTP, rather than the legacy SSE transport.
+Code mode is enabled by default. Set `"codemode": false` to disable it. Its `code` argument runs JavaScript in a 128 MiB QuickJS VM. Scripts call enabled native, plugin, and MCP capabilities through `tools`; they have no direct Node, filesystem, network, or timer access.
 
-For both transports, environment references are names rather than secret values:
-
-```json
-{
-  "mcp": [
-    {
-      "transport": "stdio",
-      "name": "local-index",
-      "command": "node",
-      "args": ["./integrations/local-mcp-server.mjs"],
-      "cwd": ".",
-      "env": { "INDEX_TOKEN": "MORPHESS_INDEX_TOKEN" },
-      "timeoutMs": 30000
-    },
-    {
-      "transport": "http",
-      "name": "issue-tracker",
-      "url": "https://mcp.example.com/mcp",
-      "headers": { "Authorization": "MORPHESS_ISSUES_AUTHORIZATION" },
-      "timeoutMs": 30000
-    }
-  ]
-}
-```
-
-Set the referenced variables in the environment launching Morphess. `INDEX_TOKEN` receives the value of `MORPHESS_INDEX_TOKEN`. The HTTP `Authorization` header receives the complete value of `MORPHESS_ISSUES_AUTHORIZATION`, including any required `Bearer ` prefix. Values are not interpolated: `${VARIABLE}` and literal credentials are not valid reference names. Reference names must match `[A-Za-z_][A-Za-z0-9_]*`; a missing referenced variable fails startup.
-
-`loadConfig` resolves a supplied stdio `cwd` relative to the configuration file, independently of workspace-relative plugin paths. If omitted, the subprocess inherits the Morphess process working directory. Arguments are passed as an argv array without shell interpolation. Stdio receives the MCP SDK's limited default environment plus explicitly resolved variables, rather than the complete parent environment. Server stderr is discarded to avoid mirroring sensitive diagnostics into logs. Configured commands are trusted host programs and are not process sandboxes.
-
-Servers connect sequentially. Initialization and tool discovery share the server's setup timeout; individual calls also receive a timeout and the invoking Pi context's cancellation signal. A failure closes connections already opened by that load attempt. Runtime shutdown closes clients and transports in reverse order. HTTP redirects are rejected. There is no automatic catalog refresh, connection retry policy, or OAuth flow in Morphess; reopen the runtime after changing server configuration or its tool catalog.
-
-The programmatic connector accepts parsed `McpServerConfig[]` and an optional environment override:
-
-```ts
-connectMcpServers(configs, { env: process.env })
-// Promise<{ extensions: Extension[]; close(): Promise<void> }>
-```
-
-Transport credentials stay in transport memory and are not copied into extension metadata. Servers and plugins can still return sensitive data as tool output, and that output enters durable session history. Keep credentials out of prompts, tool arguments, command arguments, URLs, and returned content.
-
-### Discovery, validation, and output
-
-MCP tools have stable OpenAI-compatible names formed from sanitized server/tool names and a SHA-256 suffix. Use exported `mcpToolName(server, tool)` when embedding an exact name; do not guess the suffix. The original server/tool names appear in the tool description.
-
-Every MCP tool is deferred. The native `tool_search` tool searches enabled deferred tools and returns `control.addTools` so matching tools become available on subsequent model requests. For example, the model can call:
-
-```json
-{ "query": "issue-tracker find issue", "limit": 4 }
-```
-
-These are arguments to `tool_search`, not a top-level HTTP API request. Loaded declarations remain selected on that conversation branch. Tool availability still follows the conversation's enabled extensions and tools.
-
-Pi validates MCP input schemas through its native TypeBox tool machinery before execution. Malformed arguments fail as tool results without invoking the server. Catalogs are bounded to 10,000 tools and 8 MiB of catalog JSON per server. Individual input schemas are limited to 256,000 JSON characters, and descriptions are truncated to 8,192 characters. These bounds limit declaration storage; the connector does not promise support for every JSON Schema dialect a server might emit.
-
-MCP results expose text and supported image blocks. Embedded text resources become text. Resource links, binary resources, audio, and unsupported blocks produce omission notices; Morphess does not fetch resource URLs automatically. Text output is bounded to 65,536 bytes and 2,000 lines. Images over 12,000,000 base64 characters are omitted. This connector does not expose MCP resource/prompt browsing or map `structuredContent` to a native structured output contract.
-
-All MCP calls use `replay: 'unsafe'`, including tools whose server annotations claim read-only or idempotent behavior. An interrupted call may already have changed external state. After restart, Pi reports that interruption without automatically reissuing the call. Reconcile the external result before deciding whether a new call is appropriate.
-
-## Optional code mode
-
-Set `"codemode": true` to install Pi's durable `codemode` extension. Its `code` argument contains JavaScript executed in a QuickJS VM with a 128 MiB memory limit. The runtime sets `models: false`, so it does not expose direct `models.*` calls to scripts. Scripts have no direct Node, filesystem, network, or timer access; they reach host capabilities through enabled native tools.
-
-For example, the following is the body of a `codemode` call after loading the digest plugin:
+After loading the digest plugin, a code-mode body can call:
 
 ```js
 const result = await tools.digest_text({ text: 'hello' });
 text(result.sha256);
 ```
 
-Code mode can call enabled deferred MCP tools without first loading their model-facing declarations. Discover script-visible names and argument contracts with `ALL_TOOLS`, `searchTools`, and `describeTool`; use those names when calling `tools.<name>(args)`. Deferred tools are excluded from the initial inline declaration budget. Code mode therefore complements `tool_search`: one discovers tools within a script, while the other loads tool declarations for direct model calls.
+Use `ALL_TOOLS`, `searchTools`, `describeTool`, and `describeNamespace` to discover script-visible names and argument contracts. Enabled deferred tools can be called from scripts without first loading model-facing declarations. `tool_search` loads matching deferred declarations for direct calls on subsequent model requests.
 
-Native nested calls validate arguments, retain ownership, and obey their own replay policies. Pi journals deterministic script execution and reattaches nested calls during recovery. Script replay does not authorize replay of an unsafe MCP effect. Code mode itself is model-callable only, so scripts cannot recursively invoke code mode. Host tool execution is bounded by Morphess's shared admission wrapper; avoid unbounded fan-out even though JavaScript supports `Promise.all`.
+Native nested calls validate arguments, retain ownership, obey tool policy, and report failures. Pi journals deterministic script execution and reattaches keyed calls during recovery. Script replay does not authorize replay of an unsafe nested effect. Code mode is model-callable only and cannot recursively invoke itself. Direct `models.*` APIs remain disabled so model requests retain durable admission and budget controls.
 
-The VM's limits apply to the script, not to a trusted plugin or MCP subprocess that executes a host capability on its behalf.
+Bound parallel calls even when using `Promise.all`; the host's execution wrapper caps active work. VM limits apply to the script and do not isolate trusted plugins, MCP processes, or explicitly trusted host shell commands. Plan mode excludes code mode and deferred loading.
 
-## Durable foreground delegation
+## Delegation
 
-`delegate` starts a native Pi child conversation and waits for its answer:
+`delegate` starts a task-owned child conversation and waits for its textual answer:
 
 ```json
 {
@@ -174,27 +107,18 @@ The VM's limits apply to the script, not to a trusted plugin or MCP subprocess t
 }
 ```
 
-`task` must contain 1–200,000 characters. `role` defaults to `researcher`; allowed roles are `researcher`, `reviewer`, and `coder`. `timeoutMs` defaults to 600,000 and accepts integers from 100 through 3,600,000 milliseconds. Successful output is JSON text containing the native numeric `conversationId`, `role`, and textual `answer`; running tool details also expose the child ID and role.
+| Argument | Contract |
+| --- | --- |
+| `task` | 1–200,000 characters |
+| `role` | `researcher` by default; `researcher`, `reviewer`, or `coder` |
+| `timeoutMs` | 600,000 by default; integer from 100 to 3,600,000 |
 
-Researcher and reviewer have the same tool restriction: they receive only enabled parent tools named `read`, `ls`, `find`, `grep`, `search`, `glob`, `list_files`, `read_instructions`, `load_skill`, `git_status`, or `git_diff`. Neither role gains missing tools. They do not receive shell, code mode, MCP, or arbitrary plugin tools merely because a description calls them read-only. A coder inherits the parent's enabled tool union, including its enabled deferred tools, with `delegate` removed. Existing tool restrictions and host filesystem policy still apply.
+Output is JSON text with numeric `conversationId`, `role`, and textual `answer`. Running details expose the child ID and role.
 
-Roles restrict model tool access. They do not sandbox trusted hooks or imported code. Children share the workspace and execution environment; delegation does not create a worktree or isolated filesystem. Assign file ownership explicitly when coders work concurrently.
+Researcher/reviewer roles receive only enabled parent tools on the positive read allowlist: `read`, `read_bytes`, `ls`, `find`, `grep`, `glob`, `search`, `list_files`, `read_instructions`, `load_skill`, `git_status`, and `git_diff`. Unknown tools are not treated as read-only. Coder children receive the parent's currently exposed/callable/deferred tools with delegation removed. Neither role can enable an unavailable tool. Children preserve the parent's selected extensions and host policy.
 
-The relevant configuration is:
+Children share the workspace and environment; delegation does not create an isolated filesystem or worktree. Assign file ownership when coders work concurrently. Roles constrain model tool access rather than trusted plugin code.
 
-```json
-{
-  "limits": {
-    "maxConcurrentAgents": 3,
-    "maxAgentDepth": 1
-  }
-}
-```
+`limits.maxConcurrentAgents` accepts 1–16 and bounds active delegated calls across the session. Admission is transactional; a full cap rejects rather than queues a call. `maxAgentDepth: 0` disables delegation. Positive values currently allow one child level; children cannot delegate further.
 
-`maxConcurrentAgents` bounds active delegated calls across the durable session; configuration accepts 1–16. Admission is persisted transactionally. A full limit rejects the new call rather than queuing it. Completed or abandoned task records are pruned from the admission list on later calls.
-
-`maxAgentDepth: 0` disables the tool. Positive values currently permit only one child level, even though the configuration schema accepts values through 16. Every child has the delegation extension removed; setting a larger number does not enable grandchildren. The default is one.
-
-The child conversation belongs to the invoking durable tool task. Aborting the parent call reaches the child through Pi ownership. A timeout explicitly aborts child work, but cannot undo filesystem or remote effects already completed. Closing the harness preserves unfinished durable work for a later open instead of treating shutdown as a user cancellation.
-
-Delegation is replay-safe because a resumed invocation finds its existing task-owned child and submits using a stable request ID derived from the parent tool task. It reattaches to that submission instead of creating another conversation or duplicating the child's input. The original deadline is saved in a durable memo, so downtime consumes the remaining timeout. Child tools continue to obey their individual replay policies. This foreground implementation does not provide independently persistent background workers or a multi-level agent hierarchy.
+Task ownership propagates explicit abort to the child. Timeout aborts remaining child work but cannot undo completed effects. Host close preserves unfinished work. Recovery locates the existing owned child and uses a stable submission request ID, avoiding duplicate creation/input. The saved deadline includes downtime. Child tools keep their individual replay policies.

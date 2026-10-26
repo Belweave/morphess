@@ -1,0 +1,13 @@
+# Prompt cache behavior
+
+Morphess keeps Pi Durable's conversation, provider session identity, system section diffs, and compaction machinery. It does not replay completed effects to warm a cache. Static persona instructions come first; changing work state is emitted through Pi's system section updates. Compaction changes the retained prefix and can reduce reuse.
+
+Outgoing top-level tool declarations have deterministic name ordering, including when discovery order changes. Transcript messages, tool calls, and results retain their original order. Keep extension descriptions and schemas stable; avoid timestamps, random identifiers, or live counters in early instructions.
+
+Set `context.cacheRetention` to `short` (default), `long`, or `none`. This passes Pi's native setting to ordinary generation; Pi's summarization requests retain their own cache policy. Morphess explicitly opts out of extended retention support unless `model.compatibility.supportsLongCacheRetention` is set to `true`. Enable that capability only after checking your endpoint and model. With the installed Pi adapters, `long` plus that capability emits `prompt_cache_retention: "24h"` for Chat Completions and Responses. Unsupported endpoints may reject this field. `short` leaves retention to the endpoint. `none` suppresses Pi's cache routing key and extended-retention hint; it cannot promise to disable a provider's automatic caching or change its data retention policy.
+
+Pi persists a provider session identity for each durable conversation and passes it as the cache key when its adapter supports the endpoint. Forks receive a fresh provider identity. There is no global cross-user cache key.
+
+Pi reads provider-reported cached-token usage into `usage.cacheRead` and `usage.cacheWrite`. These are token counts, not hit percentages. For OpenAI-compatible Chat Completions, `usage.input` excludes reported cache-read tokens, so the input total is `input + cacheRead + cacheWrite`. An omitted cache metric normally normalizes to zero; zero does not establish whether the endpoint supports cache reporting. A fixture that reports cached tokens verifies accounting, not a real provider cache hit. No production cache-hit percentage has been measured by the offline suite.
+
+OpenAI requires an exact matching prefix and compatible request settings for reuse. Models have different cache controls; consult the [current OpenAI caching guide](https://developers.openai.com/api/docs/guides/prompt-caching) before enabling extended retention. Morphess currently exposes the installed adapters' native retention abstraction, not every newer provider cache option.

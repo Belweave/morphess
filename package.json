@@ -1,6 +1,6 @@
 {
   "name": "@belweave/morphess",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "An independent durable coding harness for Morph inference and OpenAI-compatible models",
   "type": "module",
@@ -23,10 +23,12 @@
     "docs",
     "morphess.example.json",
     "LICENSE",
-    "THIRD_PARTY_NOTICES.md"
+    "THIRD_PARTY_NOTICES.md",
+    "assets",
+    "CHANGELOG.md"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "node scripts/build.mjs",
     "typecheck": "tsc --noEmit",
     "test": "node scripts/test.mjs",
     "check": "npm run typecheck && npm test && npm run build",
@@ -35,15 +37,16 @@
     "eval": "npm run build && tsx scripts/eval.ts",
     "brand": "tsx scripts/brand.ts",
     "tui": "npm run build && node dist/cli.js tui",
-    "tui:demo": "npm run build && node dist/cli.js tui --demo",
-    "benchmark:stream": "node --expose-gc --import tsx scripts/benchmark-stream.ts"
+    "benchmark:stream": "node --expose-gc --import tsx scripts/benchmark-stream.ts",
+    "prepack": "npm run build"
   },
   "dependencies": {
     "@earendil-works/chord": "1.4.0",
     "@earendil-works/pi-ai": "1.4.0",
     "@earendil-works/pi-codemode": "1.4.0",
     "@earendil-works/pi-durable": "1.4.0",
-    "@modelcontextprotocol/sdk": "^1.26.0",
+    "@modelcontextprotocol/client": "2.4.0",
+    "@modelcontextprotocol/ext-tasks": "0.2.2",
     "@opentui/core": "0.7.0",
     "commander": "^14.0.2",
     "proper-lockfile": "^4.1.2",
@@ -51,6 +54,9 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@modelcontextprotocol/node": "2.1.2",
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "@modelcontextprotocol/server": "2.4.0",
     "@resvg/resvg-js": "2.6.2",
     "@types/node": "^24.10.0",
     "@types/proper-lockfile": "^4.1.4",

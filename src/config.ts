@@ -11,18 +11,36 @@ const endpoint = z.url().superRefine((value, ctx) => {
   }
 });
 
+const mcpFeatures = {
+  protocol: z.enum(['auto', '2026-07-28', 'legacy']).default('auto'),
+  elicitation: z.boolean().default(true), sampling: z.boolean().default(false),
+  roots: z.array(z.string().min(1)).max(32).default([]),
+  subscriptions: z.boolean().default(true), tasks: z.boolean().default(true),
+  maxInputRounds: z.number().int().min(1).max(16).default(8),
+};
 export const mcpServerSchema = z.discriminatedUnion('transport', [
   z.strictObject({
+    ...mcpFeatures,
     transport: z.literal('stdio'), name: z.string().min(1), command: z.string().min(1),
     args: z.array(z.string()).default([]), env: z.record(z.string(), envName).default({}),
     cwd: z.string().min(1).optional(), timeoutMs: positiveInt.default(30_000),
   }),
   z.strictObject({
+    ...mcpFeatures,
     transport: z.literal('http'), name: z.string().min(1), url: endpoint,
-    headers: z.record(z.string(), envName).default({}), timeoutMs: positiveInt.default(30_000),
+    headers: z.record(z.string(), envName).default({}), bearerTokenEnv: envName.optional(), timeoutMs: positiveInt.default(30_000),
+    oauth: z.strictObject({
+      issuer: endpoint, redirectUrl: endpoint,
+      registration: z.discriminatedUnion('type', [
+        z.strictObject({ type: z.literal('cimd'), clientMetadataUrl: endpoint }),
+        z.strictObject({ type: z.literal('pre-registered'), clientId: z.string().min(1), clientSecretEnv: envName.optional() }),
+        z.strictObject({ type: z.literal('dynamic') }),
+      ]),
+    }).optional(),
   }),
 ]);
 export type McpServerConfig = z.infer<typeof mcpServerSchema>;
+export type McpServerInput = z.input<typeof mcpServerSchema>;
 
 const modelSchema = z.strictObject({
   baseUrl: endpoint, id: z.string().min(1), api: z.enum(['chat-completions', 'responses']),
@@ -33,6 +51,7 @@ const modelSchema = z.strictObject({
   cost: z.strictObject({ input: z.number().nonnegative(), output: z.number().nonnegative(), cacheRead: z.number().nonnegative(), cacheWrite: z.number().nonnegative() }).optional(),
   compatibility: z.strictObject({
     supportsStore: z.boolean().optional(), supportsDeveloperRole: z.boolean().optional(),
+    supportsLongCacheRetention: z.boolean().optional(),
     supportsReasoningEffort: z.boolean().optional(), supportsUsageInStreaming: z.boolean().optional(),
     maxTokensField: z.enum(['max_tokens', 'max_completion_tokens']).optional(),
   }).optional(),
@@ -44,7 +63,7 @@ export const morphessConfigSchema = z.strictObject({
   limits: z.strictObject({ maxTurns: positiveInt, maxConcurrentAgents: positiveInt.max(16), maxAgentDepth: z.number().int().min(0).max(16), maxSpendUsd: z.number().positive().optional() }),
   server: z.strictObject({ host: z.string().min(1), port: z.number().int().min(0).max(65535), tokenEnv: envName }),
   plugins: z.array(z.string().min(1)), mcp: z.array(mcpServerSchema),
-  context: z.strictObject({ reserveTokens: positiveInt, keepRecentTokens: positiveInt }), codemode: z.boolean(),
+  context: z.strictObject({ reserveTokens: positiveInt, keepRecentTokens: positiveInt, cacheRetention: z.enum(['none', 'short', 'long']).default('short') }), codemode: z.boolean(),
 }).superRefine((config, ctx) => {
   if (config.model.maxOutputTokens >= config.model.contextWindow) {
     ctx.addIssue({ code: 'custom', path: ['model', 'maxOutputTokens'], message: 'maxOutputTokens must be smaller than contextWindow' });
@@ -60,7 +79,7 @@ export const morphessConfigSchema = z.strictObject({
     ctx.addIssue({ code: 'custom', path: ['model', 'input'], message: 'Input modalities must be unique' });
   }
   if (config.model.api === 'responses' && config.model.compatibility) {
-    const unsupported = Object.keys(config.model.compatibility).filter(key => key !== 'supportsDeveloperRole');
+    const unsupported = Object.keys(config.model.compatibility).filter(key => !['supportsDeveloperRole', 'supportsLongCacheRetention'].includes(key));
     if (unsupported.length) ctx.addIssue({ code: 'custom', path: ['model', 'compatibility'], message: `Responses API does not support these Chat Completions compatibility options: ${unsupported.join(', ')}` });
   }
   if (new Set(config.mcp.map(server => server.name)).size !== config.mcp.length) {
@@ -75,11 +94,11 @@ export type MorphessConfig = z.infer<typeof morphessConfigSchema>;
 export function defaultConfig(workspace: string): MorphessConfig {
   return {
     workspace: resolve(workspace), stateDir: resolve(workspace, '.morphess'),
-    model: { baseUrl: 'http://localhost:8000/v1', id: 'morphess-model', api: 'chat-completions', apiKeyEnv: 'MORPHESS_API_KEY', contextWindow: 1_000_000, maxOutputTokens: 32_768, input: ['text', 'image'], reasoning: false, timeoutMs: 600_000, idleTimeoutMs: 120_000, maxRetries: 0, allowUnauthenticated: false },
+    model: { baseUrl: 'https://api.morphllm.com/v1', id: 'morph-kimik3', api: 'chat-completions', apiKeyEnv: 'MORPH_API_KEY', contextWindow: 1_000_000, maxOutputTokens: 32_768, input: ['text', 'image'], reasoning: false, timeoutMs: 600_000, idleTimeoutMs: 120_000, maxRetries: 0, allowUnauthenticated: false },
     policy: { mode: 'workspace-write', shellTimeoutMs: 120_000, maxOutputBytes: 65_536 },
     limits: { maxTurns: 100, maxConcurrentAgents: 3, maxAgentDepth: 1 },
     server: { host: '127.0.0.1', port: 8787, tokenEnv: 'MORPHESS_SERVER_TOKEN' },
-    plugins: [], mcp: [], context: { reserveTokens: 65_536, keepRecentTokens: 131_072 }, codemode: false,
+    plugins: [], mcp: [], context: { reserveTokens: 65_536, keepRecentTokens: 131_072, cacheRetention: 'short' }, codemode: true,
   };
 }
 
@@ -110,6 +129,7 @@ export async function loadConfig(options: { cwd?: string; path?: string; env?: N
   config.stateDir = raw.stateDir === undefined ? resolve(config.workspace, '.morphess') : resolve(dirname(configPath), config.stateDir);
   for (const server of config.mcp) {
     if (server.transport === 'stdio' && server.cwd !== undefined) server.cwd = resolve(dirname(configPath), server.cwd);
+    server.roots = server.roots.map(root => root.startsWith('file:') ? root : resolve(dirname(configPath), root));
   }
   return config;
 }

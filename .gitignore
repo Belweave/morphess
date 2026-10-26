@@ -11,3 +11,4 @@ coverage/
 *.sqlite-wal
 *.log
 .DS_Store
+*.tgz

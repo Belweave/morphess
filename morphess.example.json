@@ -2,24 +2,43 @@
   "workspace": ".",
   "stateDir": ".morphess",
   "model": {
-    "baseUrl": "http://127.0.0.1:8000/v1",
-    "id": "your-model-id",
+    "baseUrl": "https://api.morphllm.com/v1",
+    "id": "morph-kimik3",
     "api": "chat-completions",
-    "apiKeyEnv": "MORPHESS_API_KEY",
+    "apiKeyEnv": "MORPH_API_KEY",
     "contextWindow": 1000000,
     "maxOutputTokens": 32768,
-    "input": ["text", "image"],
+    "input": [
+      "text",
+      "image"
+    ],
     "reasoning": false,
     "timeoutMs": 600000,
     "idleTimeoutMs": 120000,
     "maxRetries": 0,
     "allowUnauthenticated": false
   },
-  "policy": { "mode": "workspace-write", "shellTimeoutMs": 120000, "maxOutputBytes": 65536 },
-  "limits": { "maxTurns": 100, "maxConcurrentAgents": 3, "maxAgentDepth": 1 },
-  "context": { "reserveTokens": 65536, "keepRecentTokens": 131072 },
-  "server": { "host": "127.0.0.1", "port": 8787, "tokenEnv": "MORPHESS_SERVER_TOKEN" },
-  "codemode": false,
+  "policy": {
+    "mode": "workspace-write",
+    "shellTimeoutMs": 120000,
+    "maxOutputBytes": 65536
+  },
+  "limits": {
+    "maxTurns": 100,
+    "maxConcurrentAgents": 3,
+    "maxAgentDepth": 1
+  },
+  "context": {
+    "reserveTokens": 65536,
+    "keepRecentTokens": 131072,
+    "cacheRetention": "short"
+  },
+  "server": {
+    "host": "127.0.0.1",
+    "port": 8787,
+    "tokenEnv": "MORPHESS_SERVER_TOKEN"
+  },
+  "codemode": true,
   "plugins": [],
   "mcp": []
 }

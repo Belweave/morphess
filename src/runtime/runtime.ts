@@ -5,8 +5,8 @@ import { BACKGROUND_CONTEXT, type Context } from '@earendil-works/chord/context'
 import type { Models } from '@earendil-works/pi-ai';
 import { CodemodeSandbox } from '@earendil-works/pi-codemode';
 import {
-  AssistantEntry, createRegistry, Harness, type Conversation, type ConversationId,
-  type EntryId, type Extension, type ModelRef, type Storage, type SubmissionDraft,
+  AgentDoc, AssistantEntry, createRegistry, Harness, type Conversation, type ConversationId,
+  type EntryId, type Extension, type ModelRef, type RegistryReader, type Storage, type SubmissionDraft,
 } from '@earendil-works/pi-durable';
 import { createCodemodeExtension } from '@earendil-works/pi-durable/codemode';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
@@ -15,11 +15,13 @@ import { CodingTools } from '@earendil-works/pi-durable/tools';
 import { morphessConfigSchema, type MorphessConfig } from '../config.js';
 import { createContextSettings, estimateContextBudget } from '../context/budget.js';
 import { createModelRuntime } from '../models/runtime.js';
+import { providerCredentialDirectory } from '../models/credentials.js';
 import { createDelegationExtension } from '../extensions/delegation.js';
 import { loadExtensions } from '../extensions/loader.js';
-import { connectMcpServers } from '../mcp/client.js';
+import { connectMcpServers } from '../mcp/index.js';
 import { createWorkspaceEnvironment } from '../policy/workspace.js';
 import { createWorkspaceTools } from '../tools/workspace.js';
+import { createToolCatalog, type ToolCatalogOptions, type ToolOrigin } from '../tools/catalog.js';
 import { createInstructionExtension } from '../instructions/workspace.js';
 import { createWorkExtension } from '../workflow/work.js';
 import { createBudgetAdmission, withBudget } from './budgets.js';
@@ -39,17 +41,21 @@ export interface RuntimeOptions {
   onReport?: (error: unknown, info: unknown) => void;
   /** Line-oriented/batch hosts ask for missing input in final text rather than opening new durable questions. */
   nonInteractive?: boolean;
+  /** Leave Pi scheduling paused for inspection. Progress APIs such as submit/wait still resume it. */
+  resume?: boolean;
 }
 
 export class MorphessRuntime {
   readonly harness: Harness;
   readonly root: Conversation;
   readonly config: MorphessConfig;
+  readonly registry: RegistryReader;
+  #origins: ReadonlyMap<string, ToolOrigin>;
   #close: () => Promise<void>;
   #closing?: Promise<void>;
 
-  private constructor(config: MorphessConfig, harness: Harness, root: Conversation, close: () => Promise<void>) {
-    this.config = config; this.harness = harness; this.root = root; this.#close = close;
+  private constructor(config: MorphessConfig, harness: Harness, root: Conversation, registry: RegistryReader, origins: ReadonlyMap<string, ToolOrigin>, close: () => Promise<void>) {
+    this.config = config; this.harness = harness; this.root = root; this.registry = registry; this.#origins = origins; this.#close = close;
   }
 
   static async open(input: MorphessConfig, options: RuntimeOptions = {}): Promise<MorphessRuntime> {
@@ -72,13 +78,14 @@ export class MorphessRuntime {
       const modelRuntime = options.models
         ? { models: options.models, model: options.model ?? { provider: 'faux', modelId: 'faux-1' } }
         : createModelRuntime(config);
-      const env = await createWorkspaceEnvironment({ workspace: config.workspace, ...config.policy, protectedPaths: [config.stateDir] });
+      const protectedPaths = [config.stateDir, providerCredentialDirectory()];
+      const env = await createWorkspaceEnvironment({ workspace: config.workspace, ...config.policy, protectedPaths });
       cleanups.push(() => env.cleanup(BACKGROUND_CONTEXT));
       const registry = createRegistry();
       registry.install(CodingTools);
       registry.install(createWorkspaceTools({ workspace: config.workspace, maxOutputBytes: config.policy.maxOutputBytes }));
       registry.install(createPersona(config.policy.mode));
-      registry.install(await createInstructionExtension({ workspace: config.workspace, protectedPaths: [config.stateDir] }));
+      registry.install(await createInstructionExtension({ workspace: config.workspace, protectedPaths }));
       registry.install(createWorkExtension());
       registry.install(createQuestionsExtension({ getHarness: () => {
         if (!harness) throw new Error('Harness is not open');
@@ -93,14 +100,19 @@ export class MorphessRuntime {
         cleanups.push(async () => { await sandbox.close(); });
         registry.install(createCodemodeExtension({ sandbox, models: false, inlineBudget: 3_000 }));
       }
+      const origins = new Map<string, ToolOrigin>(registry.snapshot().installed().map(extension => [extension.name, 'builtin']));
       const plugins = await loadExtensions(config.plugins, { workspace: config.workspace });
       cleanups.push(() => plugins.close());
-      for (const extension of plugins.extensions) registry.install(extension);
-      const mcp = await connectMcpServers(config.mcp);
+      for (const extension of plugins.extensions) { registry.install(extension); origins.set(extension.name, 'plugin'); }
+      const mcp = await connectMcpServers(config.mcp, { stateDir: config.stateDir, onExtensionsChanged: extension => { registry.install(extension); origins.set(extension.name, 'mcp'); } });
       cleanups.push(() => mcp.close());
-      for (const extension of mcp.extensions) registry.install(extension);
-      for (const extension of options.extensions ?? []) registry.install(extension);
-      registry.install(createConcurrencyExtension(registry.snapshot().tools().map(({ tool }) => tool), Math.max(2, config.limits.maxConcurrentAgents)));
+      for (const extension of mcp.extensions) { registry.install(extension); origins.set(extension.name, 'mcp'); }
+      for (const extension of options.extensions ?? []) { registry.install(extension); origins.set(extension.name, 'host'); }
+      // MCP owns bounded per-server admission and may wait on nested human input.
+      // Holding a regular execution permit across that wait could starve local work.
+      const localTools = registry.snapshot().tools().filter(({ extension }) => origins.get(extension.name) !== 'mcp').map(({ tool }) => tool);
+      const concurrency = createConcurrencyExtension(localTools, Math.max(2, config.limits.maxConcurrentAgents));
+      registry.install(concurrency); origins.set(concurrency.name, 'builtin');
       const admit = createBudgetAdmission(() => {
         if (!harness) throw new Error('Harness is not open');
         return harness;
@@ -131,7 +143,7 @@ export class MorphessRuntime {
       const root = await opened.root(BACKGROUND_CONTEXT, { agent: { model: modelRuntime.model, cwd: config.workspace } });
       await root.configure({ model: modelRuntime.model, cwd: config.workspace }, BACKGROUND_CONTEXT);
       if (!options.storage) await chmod(join(config.stateDir, 'session.sqlite'), 0o600);
-      opened.resume();
+      if (options.resume !== false) opened.resume();
       const close = async () => {
         const errors: unknown[] = [];
         for (const cleanup of cleanups.reverse()) {
@@ -139,7 +151,7 @@ export class MorphessRuntime {
         }
         if (errors.length) throw new AggregateError(errors, 'Runtime cleanup failed');
       };
-      return new MorphessRuntime(config, opened, root, close);
+      return new MorphessRuntime(config, opened, root, registry, origins, close);
     } catch (error) {
       for (const cleanup of cleanups.reverse()) await cleanup().catch(() => {});
       throw error;
@@ -151,6 +163,16 @@ export class MorphessRuntime {
     const conversation = await this.harness.conversation(parseRecordId(id) as ConversationId, context);
     if (!conversation) throw new Error(`Conversation not found: ${id}`);
     return conversation;
+  }
+
+  async toolCatalog(options: ToolCatalogOptions = {}, context = BACKGROUND_CONTEXT) {
+    const conversation = await this.conversation(options.sessionId, context);
+    const [agent, state, inspection] = await Promise.all([
+      conversation.agent(context), this.harness.snapshot(AgentDoc, conversation.id, context), this.harness.inspect(context),
+    ]);
+    return createToolCatalog(this.registry.snapshot(), agent, state ?? {}, {
+      sessionId: conversation.id, policy: this.config.policy.mode, scheduling: inspection.scheduling, origins: this.#origins,
+    }, options);
   }
 
   async createConversation(instructions?: string): Promise<Conversation> {

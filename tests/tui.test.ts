@@ -39,6 +39,8 @@ function mockClient(initial = initialState()) {
     setMode: vi.fn(async (mode: 'build' | 'plan') => { emit({ mode }); }),
     answer: vi.fn(async (_questionId: number, _answer: string) => { emit({ questions: [] }); }),
     diff: vi.fn(async () => '+ added line'), files: vi.fn(async (_query: string) => ['src/app.ts', 'README.md']),
+    tools: vi.fn(async () => ({ sessionId: state.sessionId, policy: 'workspace-write' as const, scheduling: 'paused' as const, availabilityBasis: 'native-selection-and-known-host-policy' as const, tools: [], extensions: [] })),
+    provider: vi.fn(async () => ({ baseUrl: 'https://api.morphllm.com/v1', model: 'model', api: 'chat-completions' as const, apiKeyEnv: 'MORPH_API_KEY', authenticated: false, source: 'none' as const })),
   } satisfies Client;
   return { client, emit, listeners };
 }
@@ -73,7 +75,7 @@ describe.skipIf(!supported)('native OpenTUI view (Node 26.4+ with --experimental
     const { app, setup } = await openView(width, height);
     const frame = setup.captureCharFrame();
     expect(frame).toContain('morphess');
-    expect(frame).toContain('What are we building?');
+    expect(frame).toContain('New session');
     expect(frame).toContain('Enter send');
     expect(frame).toContain('workspace-write');
     expect(app.composer.visible).toBe(true);
@@ -102,7 +104,7 @@ describe.skipIf(!supported)('native OpenTUI view (Node 26.4+ with --experimental
 
   it('shows the bundled launch mark on resumed sessions and dismisses it without losing input', async () => {
     const { app, setup } = await openView(120, 36, initialState({ entries: [{ id: 'existing', role: 'user', text: 'Previous work', status: 'done', revision: 1 }] }), { launchMark: true });
-    expect(setup.captureCharFrame()).toContain('Resuming your workspace');
+    expect(setup.captureCharFrame()).toContain('Opening session');
     expect(setup.captureCharFrame()).toContain('not official or Morph-backed');
     expect(app.transcript.visible).toBe(false);
     await setup.mockInput.typeText('Continue'); await settle(setup);
@@ -139,6 +141,17 @@ describe.skipIf(!supported)('native OpenTUI view (Node 26.4+ with --experimental
     expect(client.newSession).toHaveBeenCalledTimes(1);
     expect(client.send).not.toHaveBeenCalled();
     expect(app.composer.focused).toBe(true);
+  });
+
+  it('selects the current search result when query and Enter arrive in one input batch', async () => {
+    const { setup, client } = await openView();
+    setup.mockInput.pressKey('p', { ctrl: true }); await settle(setup);
+    await setup.mockInput.pressKeys([... 'Provider', '\r']);
+    await settle(setup);
+    expect(client.provider).toHaveBeenCalledTimes(1);
+    expect(client.newSession).not.toHaveBeenCalled();
+    expect(client.send).not.toHaveBeenCalled();
+    expect(setup.captureCharFrame()).toContain('Endpoint: https://api.morphllm.com/v1');
   });
 
   it('keeps the assistant Markdown node stable when usage, status or composer change', async () => {
@@ -178,7 +191,7 @@ describe.skipIf(!supported)('native OpenTUI view (Node 26.4+ with --experimental
 
   it('toggles the inspector, hides it on narrow terminals and changes theme without replacing rows', async () => {
     const preferences = defaultPreferences();
-    const { app, setup } = await openView(120, 36, initialState({ entries: [{ id: 'stable', role: 'assistant', text: 'Ready to build.', status: 'done', revision: 1 }] }), { preferences });
+    const { app, setup } = await openView(120, 36, initialState({ entries: [{ id: 'stable', role: 'assistant', text: 'File updated.', status: 'done', revision: 1 }] }), { preferences });
     const body = app.root.findDescendantById('body-stable');
     const inspector = app.root.findDescendantById('inspector');
     expect(inspector?.visible).toBe(false);

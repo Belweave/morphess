@@ -35,11 +35,13 @@ try {
   const config = defaultConfig(workspace);
   config.model.baseUrl = `http://127.0.0.1:${address.port}/v1`;
   config.model.id = 'morphess-eval-1m'; config.model.allowUnauthenticated = true;
+  config.model.apiKeyEnv = 'MORPHESS_EVAL_FIXTURE_KEY';
   await writeFile(join(workspace, 'morphess.json'), JSON.stringify(config));
   const prompt = process.env.MORPHESS_EVAL_LARGE === '1' ? `Inspect this evidence and write proof.txt.\n${'context evidence '.repeat(175_000)}` : 'Write proof.txt to show coding tools work.';
   const started = performance.now();
   const result = await new Promise<{ code: number | null; stdout: string; stderr: string }>((resolveResult, reject) => {
-    const child = spawn(process.execPath, [resolve('dist/cli.js'), '-C', workspace, 'run', '-', '--json', '--request-id', 'offline-eval'], { stdio: ['pipe', 'pipe', 'pipe'] });
+    const env = { ...process.env }; delete env[config.model.apiKeyEnv];
+    const child = spawn(process.execPath, [process.env.MORPHESS_EVAL_CLI ?? resolve('dist/cli.js'), '-C', workspace, 'run', '-', '--json', '--request-id', 'offline-eval'], { stdio: ['pipe', 'pipe', 'pipe'], env });
     let output = ''; let errors = '';
     child.stdout.on('data', (chunk) => { output += chunk.toString(); });
     child.stderr.on('data', (chunk) => { errors += chunk.toString(); });

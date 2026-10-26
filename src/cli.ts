@@ -1,20 +1,27 @@
 #!/usr/bin/env node
 import { writeFile } from 'node:fs/promises';
+import { realpathSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { stdin, stdout, stderr } from 'node:process';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { Command } from 'commander';
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context';
-import { watchEvents, type Cursor, type Conversation } from '@earendil-works/pi-durable';
+import { watchEvents, UsageDoc, type Cursor, type Conversation } from '@earendil-works/pi-durable';
 import { defaultConfig, loadConfig } from './config.js';
 import { MorphessRuntime } from './runtime/runtime.js';
 import { withImages } from './media/input.js';
 import { serve } from './http/server.js';
+import { VERSION } from './version.js';
+import { configureCliHelp } from './cli/help.js';
+import { registerMcpCommands } from './cli/mcp.js';
+import { registerProviderCommands } from './cli/provider.js';
+import { getProviderCredentialStatus } from './models/credentials.js';
+import { sanitizeText, summarizeUsage } from './tui/state.js';
 
 export function createCli() {
-  const program = new Command().name('morphess').description('A durable coding agent built on Pi Durable')
-    .version('0.2.0').option('-c, --config <file>', 'configuration file').option('-C, --workspace <directory>', 'workspace directory').option('--trusted', 'allow unrestricted host shell execution')
+  const program = new Command().name('morphess').description('Coding agent CLI and terminal workspace')
+    .version(VERSION).option('-c, --config <file>', 'configuration file').option('-C, --workspace <directory>', 'workspace directory').option('--trusted', 'allow unrestricted host shell execution')
     .addHelpText('after', '\nMorphess is an independent, unofficial harness for Morph inference.\nIt is not developed, endorsed, sponsored, or backed by Morph.\n');
 
   async function config() {
@@ -24,11 +31,11 @@ export function createCli() {
     return loaded;
   }
 
-  async function usingRuntime<T>(run: (runtime: MorphessRuntime, target: (conversation: Conversation) => void) => Promise<T>, terminal = false, questions = true): Promise<T> {
+  async function usingRuntime<T>(run: (runtime: MorphessRuntime, target: (conversation: Conversation) => void) => Promise<T>, terminal = false, questions = true, resume = true): Promise<T> {
     const runtime = await MorphessRuntime.open(await config(), { onReport: (_error, info) => {
       // Report categories only; provider diagnostics may contain credentials or private payloads.
       stderr.write(`[morphess] ${JSON.stringify(info)}\n`);
-    }, nonInteractive: !questions });
+    }, nonInteractive: !questions, resume });
     let target = runtime.root;
     const interrupt = () => { void target.abort(BACKGROUND_CONTEXT, { background: true }).catch(() => {}); };
     if (!terminal) process.on('SIGINT', interrupt);
@@ -36,19 +43,19 @@ export function createCli() {
     finally { process.off('SIGINT', interrupt); await runtime.close(); }
   }
 
-  program.command('tui', { isDefault: true }).description('Open the focused coding workspace (Node 26.4+, native OpenTUI)')
-    .option('-s, --session <id>', 'existing conversation', 'root').option('--demo', 'use a temporary workspace and offline scripted provider')
-    .action(async (options: { session: string; demo?: boolean }) => {
+  async function terminal(options: { session: string }, menu = false): Promise<void> {
       if (!stdin.isTTY || !stdout.isTTY) throw new Error('The TUI requires a terminal; use run - for piped input');
       const { bootstrapTerminal } = await import('./tui/bootstrap.js');
       if (await bootstrapTerminal()) return;
       const { launchTui } = await import('./tui/app.js');
-      if (options.demo) {
-        const { openDemoRuntime } = await import('./tui/demo.js');
-        const demo = await openDemoRuntime();
-        try { await launchTui(demo.runtime, { demo: true }); } finally { await demo.close(); }
-      } else await usingRuntime(runtime => launchTui(runtime, { sessionId: options.session }), true);
-    });
+      await usingRuntime(runtime => launchTui(runtime, { sessionId: options.session, menu }), true);
+  }
+  program.command('tui', { isDefault: true }).description('Open terminal workspace (default command)')
+    .option('-s, --session <id>', 'existing conversation', 'root')
+    .action(async (options: { session: string }) => terminal(options));
+  program.command('menu').description('Open the terminal action menu')
+    .option('-s, --session <id>', 'existing conversation', 'root')
+    .action(async (options: { session: string }) => terminal(options, true));
 
   program.command('init').description('Write a configuration template without overwriting existing configuration')
     .action(async () => {
@@ -57,16 +64,17 @@ export function createCli() {
       const path = resolve(cwd, options.config ?? 'morphess.json');
       const template = defaultConfig(cwd);
       await writeFile(path, `${JSON.stringify(template, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
-      stdout.write(`Created ${path}\nSet your model endpoint/id and ${template.model.apiKeyEnv}, then run morphess doctor.\n`);
+      stdout.write(`Created ${path}\nRun morphess auth login to enter a key, or morphess configure to change providers.\n`);
     });
 
   program.command('doctor').description('Validate configuration and report capabilities without calling a model')
     .action(async () => {
       const loaded = await config();
-      const keyPresent = Boolean(process.env[loaded.model.apiKeyEnv]);
+      const credential = await getProviderCredentialStatus(loaded.model);
+      const keyPresent = credential.authenticated;
       stdout.write(`${JSON.stringify({
         node: process.version, workspace: loaded.workspace, stateDir: loaded.stateDir,
-        provider: { baseUrl: loaded.model.baseUrl, id: loaded.model.id, api: loaded.model.api, contextWindow: loaded.model.contextWindow, maxOutputTokens: loaded.model.maxOutputTokens, input: loaded.model.input, authenticated: keyPresent, allowUnauthenticated: loaded.model.allowUnauthenticated },
+        provider: { baseUrl: loaded.model.baseUrl, id: loaded.model.id, api: loaded.model.api, contextWindow: loaded.model.contextWindow, maxOutputTokens: loaded.model.maxOutputTokens, input: loaded.model.input, authenticated: keyPresent, credentialSource: credential.source, allowUnauthenticated: loaded.model.allowUnauthenticated },
         policy: loaded.policy.mode, codemode: loaded.codemode, plugins: loaded.plugins.length, mcpServers: loaded.mcp.length,
         ready: keyPresent || loaded.model.allowUnauthenticated,
       }, null, 2)}\n`);
@@ -155,7 +163,36 @@ export function createCli() {
       for (const session of page.items) stdout.write(`${JSON.stringify(session)}\n`);
       cursor = page.next;
     } while (cursor);
-  }));
+  }, false, true, false));
+
+  program.command('tools').description('Inspect native, code mode, plugin and MCP tools').argument('[name]', 'tool to inspect, including its JSON parameters')
+    .option('-s, --session <id>', 'conversation tool selection', 'root')
+    .option('--all', 'include deferred, disabled and unselected tools')
+    .option('--schema', 'include JSON parameters for every listed tool')
+    .option('--json', 'print machine-readable catalog')
+    .action(async (name: string | undefined, options: { session: string; all?: boolean; schema?: boolean; json?: boolean }) => usingRuntime(async runtime => {
+      const catalog = await runtime.toolCatalog({ sessionId: options.session, name, all: options.all, includeParameters: options.schema });
+      if (options.json) { stdout.write(`${JSON.stringify(catalog, null, 2)}\n`); return; }
+      stdout.write(`Session ${catalog.sessionId} · ${catalog.policy} · scheduler ${catalog.scheduling}\n`);
+      for (const tool of catalog.tools) {
+        stdout.write(`\n${sanitizeText(tool.name, 256)}  [${tool.status}]  ${tool.origin} · replay ${tool.replay}\n`);
+        stdout.write(`  ${sanitizeText(tool.description, 4_000)}\n`);
+        if (tool.reason) stdout.write(`  ${sanitizeText(tool.reason, 2_000)}\n`);
+        if (tool.parameters) stdout.write(`${JSON.stringify(tool.parameters, null, 2)}\n`);
+      }
+      if (!name && !options.all) stdout.write('\nUse --all for deferred/disabled tools; tools <name> for parameters.\n');
+    }, false, true, false));
+
+  program.command('usage').description('Show reported tokens, cache reads/writes and model cost')
+    .option('-s, --session <id>', 'one conversation; default all workspace conversations').option('--json', 'print machine-readable usage')
+    .action(async (options: { session?: string; json?: boolean }) => usingRuntime(async runtime => {
+      const conversation = options.session ? await runtime.conversation(options.session) : undefined;
+      const usage = conversation ? await runtime.harness.snapshot(UsageDoc, conversation.id, BACKGROUND_CONTEXT) ?? { models: {}, tools: {} } : await runtime.harness.usage(BACKGROUND_CONTEXT);
+      const summary = summarizeUsage(usage);
+      const inputTotal = summary.input + summary.cacheRead + summary.cacheWrite;
+      if (options.json) { stdout.write(`${JSON.stringify({ sessionId: conversation?.id, inputTotal, ...summary, usage }, null, 2)}\n`); return; }
+      stdout.write(`${conversation ? `Session ${conversation.id}` : 'Workspace'} usage (provider reported)\nInput total: ${inputTotal}\nUncached input: ${summary.input}\nCache read: ${summary.cacheRead}\nCache write: ${summary.cacheWrite}\nOutput: ${summary.output}\nModel cost: $${summary.cost.toFixed(6)}\n`);
+    }, false, true, false));
 
   program.command('resume').description('Resume pending durable tasks and wait for idle').action(async () => usingRuntime(async (runtime) => {
     await runtime.harness.waitForIdle(BACKGROUND_CONTEXT);
@@ -171,15 +208,23 @@ export function createCli() {
         for (const entry of page.items) stdout.write(`${JSON.stringify(entry)}\n`);
         cursor = page.next;
       } while (cursor);
-    }));
+    }, false, true, false));
 
   program.command('fork').description('Fork a conversation from a committed entry').argument('<session>').argument('<entry>')
     .action(async (session: string, entry: string) => usingRuntime(async (runtime) => { stdout.write(`${JSON.stringify({ id: (await runtime.fork(session, entry)).id })}\n`); }));
 
+  registerMcpCommands(program, { config });
+  registerProviderCommands(program, { config });
+  configureCliHelp(program);
   return program;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+function isMain(): boolean {
+  try { return Boolean(process.argv[1] && realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1])); }
+  catch { return false; }
+}
+
+if (isMain()) {
   createCli().parseAsync().catch((error: unknown) => {
     stderr.write(`morphess: ${error instanceof Error ? error.message : 'Unknown failure'}\n`);
     process.exitCode = 1;

@@ -1,6 +1,6 @@
 # HTTP API
 
-Run `node dist/cli.js serve`. Send JSON with `Content-Type: application/json` and, when configured, `Authorization: Bearer <server token>`. IDs are numeric Pi IDs; `root` aliases the root conversation.
+Run `morphess serve`. Send JSON with `Content-Type: application/json` and, when configured, `Authorization: Bearer <server token>`. IDs are numeric Pi IDs; `root` aliases the root conversation.
 
 ## Native sessions
 

@@ -21,6 +21,7 @@ async function fixture(handler: (body: Record<string, unknown>, response: Server
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('Missing fixture address');
   const config = defaultConfig(process.cwd());
+  config.model.apiKeyEnv = 'MORPHESS_API_KEY';
   config.model.baseUrl = `http://127.0.0.1:${address.port}/v1`;
   config.model.id = 'custom-million-vision-model';
   return { config, requests };
