@@ -2,6 +2,9 @@ import { mkdtemp, readFile, stat, symlink, writeFile, mkdir } from 'node:fs/prom
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { PassThrough } from 'node:stream';
+import { execFile, spawnSync } from 'node:child_process';
+import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
 import { expect, it } from 'vitest';
 import { defaultConfig } from '../src/config.js';
 import { readMaskedApiKey, writeProviderConfiguration } from '../src/cli/provider.js';
@@ -49,6 +52,62 @@ it('masks pasted key input, handles split paste delimiters and restores raw mode
   const { input, output, rendered } = terminal(); const listeners = process.listenerCount('SIGINT');
   const promise = readMaskedApiKey(input, output); input.write('\x1b[20'); input.write('0~fixture-'); input.write('secret\n\x1b[201~'); input.write('\r');
   expect(await promise).toBe('fixture-secret'); expect(rendered()).not.toContain('fixture-secret'); expect(input.isRaw).toBe(false); expect(input.listenerCount('data')).toBe(0); expect(process.listenerCount('SIGINT')).toBe(listeners);
+});
+it('disables terminal echo before showing the API key prompt', async () => {
+  const { input, output } = terminal(); let rawAtPrompt: boolean | undefined;
+  output.on('data', chunk => { if (chunk.toString().includes('API key (hidden):')) rawAtPrompt = input.isRaw; });
+  const promise = readMaskedApiKey(input, output); input.write('fixture-key\r');
+  await promise; expect(rawAtPrompt).toBe(true);
+});
+it('releases input after masked entry when the stream had no prior reader', async () => {
+  const { input, output } = terminal();
+  expect(input.readableFlowing).toBeNull();
+  expect(input.isPaused()).toBe(false);
+  const promise = readMaskedApiKey(input, output); input.write('fixture-key\r');
+  expect(await promise).toBe('fixture-key');
+  expect(input.isPaused()).toBe(true);
+});
+it('preserves an existing reader after masked entry', async () => {
+  const { input, output } = terminal(); input.resume();
+  const promise = readMaskedApiKey(input, output); input.write('fixture-key\r');
+  expect(await promise).toBe('fixture-key'); expect(input.readableFlowing).toBe(true);
+  input.pause();
+});
+// Python supplies an OS pseudo-terminal on Unix; a pipe has different Node
+// handle-liveness behavior and cannot reproduce this terminal regression.
+it.skipIf(process.platform === 'win32' || spawnSync('python3', ['--version']).status !== 0)('returns to the shell after auth login without waiting for terminal EOF', async () => {
+  const source = fileURLToPath(new URL('../src/cli.ts', import.meta.url));
+  const { stdout } = await promisify(execFile)('python3', ['-c', `
+import json, os, pty, select, subprocess, sys, tempfile, time
+with tempfile.TemporaryDirectory(prefix='morphess-login-pty-') as root:
+    master, slave = pty.openpty()
+    env = os.environ.copy()
+    env['XDG_CONFIG_HOME'] = root
+    child = subprocess.Popen([sys.argv[1], '--import', 'tsx', sys.argv[2], '-C', root, 'auth', 'login'], stdin=slave, stdout=slave, stderr=slave, env=env)
+    os.close(slave)
+    output = b''
+    sent = False
+    deadline = time.monotonic() + 5
+    try:
+        while time.monotonic() < deadline:
+            ready, _, _ = select.select([master], [], [], 0.05)
+            if ready:
+                try: output += os.read(master, 65536)
+                except OSError: break
+            if b'API key (hidden):' in output and not sent:
+                os.write(master, b'fixture-terminal-key\\r')
+                sent = True
+            if child.poll() is not None: break
+        try: code = child.wait(timeout=0.5)
+        except subprocess.TimeoutExpired: code = None
+        print(json.dumps({'code': code, 'saved': b'Provider API key saved privately' in output, 'leaked': b'fixture-terminal-key' in output}))
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait()
+        os.close(master)
+`, process.execPath, source], { timeout: 10_000 });
+  expect(JSON.parse(stdout)).toEqual({ code: 0, saved: true, leaked: false });
 });
 it('cancels masked entry on Ctrl-C and rejects nonterminal secret pipes', async () => {
   const { input, output, rendered } = terminal(); const promise = readMaskedApiKey(input, output); input.write('fixture-secret\x03');

@@ -12,7 +12,7 @@ The terminal requires Node 26.4+ on macOS or Linux. Headless commands and librar
 npm ci --ignore-scripts
 npm run check
 npm pack
-npm install --global ./belweave-morphess-0.2.1.tgz --omit=dev --ignore-scripts
+npm install --global ./belweave-morphess-0.2.2.tgz --omit=dev --ignore-scripts
 export PATH="$(npm prefix --global)/bin:$PATH"
 morphess --version
 morphess --help

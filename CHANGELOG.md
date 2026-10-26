@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.2 — 2026-10-26
+
+- Fixed `auth login` staying alive after saving a key by releasing terminal input when no reader was active before entry.
+- Disabled terminal echo before displaying the API key prompt, including immediate paste input.
+- Added regression coverage for unused input, existing readers, and natural process exit without stdin EOF.
+
 ## 0.2.1 — 2026-10-26
 
 - Added production artifact installation with an executable npm global CLI and symlink-aware entrypoint detection.

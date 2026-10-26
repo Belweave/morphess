@@ -5,6 +5,7 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { afterEach, expect, it } from 'vitest';
+import { VERSION } from '../src/version.js';
 
 const execute = promisify(execFile);
 const directories: string[] = [];
@@ -15,7 +16,7 @@ it('runs the CLI through an npm-style executable symlink from another working di
   const bin = join(directory, 'morphess');
   await symlink(resolve('src/cli.ts'), bin);
   const { stdout } = await execute(process.execPath, ['--import', pathToFileURL(resolve('node_modules/tsx/dist/loader.mjs')).href, bin, '--version'], { cwd: directory });
-  expect(stdout.trim()).toBe('0.2.1');
+  expect(stdout.trim()).toBe(VERSION);
   const help = await execute(process.execPath, ['--import', pathToFileURL(resolve('node_modules/tsx/dist/loader.mjs')).href, bin, '--help'], { cwd: directory });
   expect(help.stdout).toContain('tui [options]');
   expect(help.stdout).toContain('independent, unofficial harness');

@@ -15,11 +15,13 @@ export function readMaskedApiKey(input: SecretInput = stdin, output: Writable = 
   if (!input.isTTY) return Promise.reject(new Error('API key entry requires an interactive terminal; use an environment variable for automation'));
   return new Promise((accept, reject) => {
     let key = ''; let pending = ''; let paste = false; let pasted = ''; let settled = false;
-    const previousRaw = Boolean(input.isRaw); const previousPaused = input.isPaused();
+    const previousRaw = Boolean(input.isRaw); const previousFlowing = input.readableFlowing;
     const done = (error?: Error) => {
       if (settled) return; settled = true;
       input.off('data', data); input.off('end', ended); input.off('error', failed); process.off('SIGINT', interrupted);
-      input.setRawMode(previousRaw); if (previousPaused) input.pause();
+      // Unused stdin has readableFlowing=null but isPaused()=false. Leaving it
+      // resumed keeps a standalone login process alive after the key is saved.
+      input.setRawMode(previousRaw); if (previousFlowing !== true) input.pause();
       output.write('\n');
       if (error) reject(error); else if (!key) reject(new Error('API key cannot be empty')); else accept(key);
     };
@@ -50,8 +52,8 @@ export function readMaskedApiKey(input: SecretInput = stdin, output: Writable = 
         output.write('*');
       }
     };
-    output.write('API key (hidden): ');
     input.setRawMode(true); input.on('data', data); input.once('end', ended); input.once('error', failed); process.on('SIGINT', interrupted); input.resume();
+    output.write('API key (hidden): ');
   });
 }
 
