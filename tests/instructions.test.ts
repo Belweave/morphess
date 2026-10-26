@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context';
 import type { PromptInput, ToolExecutionApi, ToolExecutionResult } from '@earendil-works/pi-durable';
-import { createInstructionExtension } from '../src/instructions/workspace.js';
+import { createInstructionExtension, readInstructionFile } from '../src/instructions/workspace.js';
 import { createWorkspaceEnvironment } from '../src/policy/workspace.js';
 let workspace: string;
 const context = BACKGROUND_CONTEXT;
@@ -55,6 +55,21 @@ describe('instruction and skill discovery', () => {
     await rm(join(workspace, '.agents', 'skills', 'verify', 'SKILL.md'));
     await symlink('/etc/passwd', join(workspace, '.agents', 'skills', 'verify', 'SKILL.md'));
     await expect(createInstructionExtension({ workspace })).rejects.toThrow('escapes');
+  });
+  it('honors custom protected paths during startup skill discovery', async () => {
+    const extension = await createInstructionExtension({ workspace, protectedPaths: [join(workspace, '.agents', 'skills', 'verify')] });
+    const rendered = await extension.sections![0]!.render({} as PromptInput, context);
+    expect(rendered).not.toContain('Check the implementation carefully.');
+    const env = await createWorkspaceEnvironment({ workspace, mode: 'read-only' });
+    await expect(extension.tools!.find((item) => item.name === 'load_skill')!.execute({ name: 'verify' }, { env } as unknown as ToolExecutionApi, context)).rejects.toThrow('Unknown skill');
+  });
+  it('includes truncation notices within the byte budget', async () => {
+    await writeFile(join(workspace, 'AGENTS.md'), '🌍'.repeat(200));
+    const env = await createWorkspaceEnvironment({ workspace, mode: 'read-only' });
+    const rendered = await readInstructionFile(env, join(env.cwd, 'AGENTS.md'), 128, context);
+    expect(Buffer.byteLength(rendered!)).toBeLessThanOrEqual(128);
+    expect(rendered).toContain('truncated');
+    expect(rendered).not.toContain('\uFFFD');
   });
   it('declares every instruction tool replay-safe', async () => {
     for (const tool of (await createInstructionExtension({ workspace })).tools!) expect(tool.replay).toBe('safe');

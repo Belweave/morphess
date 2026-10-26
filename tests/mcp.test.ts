@@ -106,8 +106,10 @@ describe('native MCP integration', () => {
     mcp.setRequestHandler(CallToolRequestSchema, async () => ({ content: [{ type: 'text', text: 'local-http' }] }));
     await mcp.connect(transport);
     let authorized = false;
+    let deletedSessions = 0;
     const http = createServer((request, response) => {
       authorized ||= request.headers.authorization === 'fixture-auth-reference';
+      if (request.method === 'DELETE' && request.headers['mcp-session-id']) deletedSessions++;
       void transport.handleRequest(request, response).catch(() => { if (!response.headersSent) response.writeHead(500); response.end(); });
     });
     http.listen(0, '127.0.0.1'); await once(http, 'listening');
@@ -120,6 +122,8 @@ describe('native MCP integration', () => {
     const output = await connected.extensions[0]!.tools![0]!.execute({}, {} as ToolExecutionApi, context);
     expect(output.output).toEqual([{ type: 'text', text: 'local-http' }]);
     expect(authorized).toBe(true);
+    await connected.close(); await connected.close();
+    expect(deletedSessions).toBe(1);
   });
 
   it('rolls back earlier transports when a later server cannot initialize', async () => {

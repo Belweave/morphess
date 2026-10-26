@@ -21,9 +21,10 @@ export async function readInstructionFile(env: ExecutionEnv, path: string, limit
   }
   try {
     const info = getOrThrow(await opened.value.info(context));
-    const bytes = getOrThrow(await opened.value.read(0, limit, context));
-    const text = truncateUtf8(new TextDecoder().decode(bytes), limit);
-    return text + (info.size > limit ? '\n[Instruction file truncated; consult the source for the remaining instructions.]' : '');
+    const bytes = getOrThrow(await opened.value.read(0, limit + 1, context));
+    const marker = '\n[Instruction file truncated; consult the source for the remaining instructions.]';
+    if (info.size > limit || bytes.length > limit) return truncateUtf8(new TextDecoder().decode(bytes), Math.max(0, limit - Buffer.byteLength(marker))) + truncateUtf8(marker, limit);
+    return truncateUtf8(new TextDecoder().decode(bytes), limit);
   } finally { await opened.value.close(context); }
 }
 function frontmatter(text: string, key: string): string | undefined {
@@ -51,8 +52,8 @@ function contained(root: string, path: string): string {
  * are disclosed only through read-only, replay-safe Pi tools. No skill executes
  * code merely because it was discovered.
  */
-export async function createInstructionExtension(options: { workspace: string }): Promise<Extension> {
-  const startupEnv = await createWorkspaceEnvironment({ workspace: options.workspace, mode: 'read-only', maxOutputBytes: 512 * 1024 });
+export async function createInstructionExtension(options: { workspace: string; protectedPaths?: readonly string[] }): Promise<Extension> {
+  const startupEnv = await createWorkspaceEnvironment({ workspace: options.workspace, protectedPaths: options.protectedPaths, mode: 'read-only', maxOutputBytes: 512 * 1024 });
   const context = BACKGROUND_CONTEXT;
   const root = startupEnv.cwd;
   let rootInstructions: string | undefined;
@@ -66,10 +67,13 @@ export async function createInstructionExtension(options: { workspace: string })
     if (directory.ok) {
       try {
         let done = false;
-        while (!done && skills.length < MAX_SKILLS) {
+        let inspectedEntries = 0;
+        const deadline = Date.now() + 2000;
+        while (!done && skills.length < MAX_SKILLS && inspectedEntries < 500 && Date.now() < deadline) {
           const page = getOrThrow(await directory.value.next(128, context));
           done = page.done;
           for (const item of page.entries) {
+            if (++inspectedEntries > 500 || Date.now() >= deadline) break;
             if (item.kind !== 'directory' || skills.length >= MAX_SKILLS) continue;
             const path = join('.agents', 'skills', item.name, 'SKILL.md');
             const text = await readInstructionFile(startupEnv, join(root, path), 16 * 1024, context);

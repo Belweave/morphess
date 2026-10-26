@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { chmod, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, link, mkdtemp, mkdir, open, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context';
 import { createEditTool, createWriteTool } from '@earendil-works/pi-durable/tools';
 import type { ToolExecutionApi } from '@earendil-works/pi-durable';
+import { WORKSPACE_FILE_LIMITS } from '../src/policy/files.js';
 import { createWorkspaceEnvironment, truncateUtf8 } from '../src/policy/workspace.js';
 
 const context = BACKGROUND_CONTEXT;
@@ -99,6 +101,57 @@ describe('workspace file capability', () => {
       await expect(readFile(marker)).rejects.toThrow();
     } finally { process.env.PATH = previous; }
   });
+  it.skipIf(process.platform === 'win32')('rejects special files across reads and writes without opening blocking streams', async () => {
+    const pipe = join(workspace, 'pipe'); execFileSync('mkfifo', [pipe]);
+    const env = await createWorkspaceEnvironment({ workspace, mode: 'workspace-write' });
+    for (const operation of [
+      () => env.readTextFile('pipe', context), () => env.readBinaryFile('pipe', context),
+      () => env.openTextLineReader('pipe', context), () => env.readTextLines('pipe', {}, context),
+      () => env.openBinaryReader('pipe', {}, context), () => env.writeFile('pipe', 'bad', context),
+      () => env.appendFile('pipe', 'bad', context), () => env.truncateFile('pipe', 0, context), () => env.flushFile('pipe', context),
+    ]) expect((await operation()).ok).toBe(false);
+  });
+  it('rejects oversized full reads, line scans and individual lines with bounded alternatives', async () => {
+    const path = join(workspace, 'sparse.log'); const handle = await open(path, 'w');
+    await handle.truncate(WORKSPACE_FILE_LIMITS.scanBytes + 1); await handle.close();
+    const env = await createWorkspaceEnvironment({ workspace, mode: 'workspace-write' });
+    const full = await env.readTextFile('sparse.log', context);
+    expect(full.ok).toBe(false);
+    if (!full.ok) expect(full.error.message).toContain('read_bytes');
+    const opened = await env.openBinaryReader('sparse.log', {}, context);
+    expect(opened.ok).toBe(true);
+    if (opened.ok) {
+      expect((await opened.value.read(0, WORKSPACE_FILE_LIMITS.positionalReadBytes + 1, context)).ok).toBe(false);
+      expect((await opened.value.scanLines({ startLine: 0, endLine: 1 }, context)).ok).toBe(false);
+      expect((await opened.value.read(0, 16, context)).ok).toBe(true);
+      await opened.value.close(context);
+    }
+    await writeFile(join(workspace, 'long-line'), 'x'.repeat(WORKSPACE_FILE_LIMITS.lineBytes + 1));
+    const lines = await env.openTextLineReader('long-line', context);
+    if (!lines.ok) throw lines.error;
+    try { expect((await lines.value.readLine(context)).ok).toBe(false); } finally { await lines.value.close(context); }
+  });
+  it('preserves byte-order marks during Pi full-file edits and handles bounded line reads', async () => {
+    await writeFile(join(workspace, 'bom.ts'), '\uFEFFbefore\nline two');
+    const env = await createWorkspaceEnvironment({ workspace, mode: 'workspace-write' });
+    await createEditTool().execute({ path: 'bom.ts', edits: [{ oldText: 'before', newText: 'after' }] }, { env } as unknown as ToolExecutionApi, context);
+    expect(await readFile(join(workspace, 'bom.ts'), 'utf8')).toBe('\uFEFFafter\nline two');
+    expect(await env.readTextLines('bom.ts', { maxLines: 1 }, context)).toEqual({ ok: true, value: ['after'] });
+  });
+  it('keeps interior byte-order marks at chunk boundaries during line reads', async () => {
+    const text = 'x'.repeat(64 * 1024) + '\uFEFFtail';
+    await writeFile(join(workspace, 'chunked'), text);
+    const env = await createWorkspaceEnvironment({ workspace, mode: 'read-only' });
+    expect(await env.readTextLines('chunked', {}, context)).toEqual({ ok: true, value: [text] });
+  });
+  it('blocks mutation through hard links to files outside the workspace', async () => {
+    await link(join(outside, 'secret'), join(workspace, 'hardlink'));
+    const env = await createWorkspaceEnvironment({ workspace, mode: 'workspace-write' });
+    expect((await env.writeFile('hardlink', 'changed', context)).ok).toBe(false);
+    expect((await env.appendFile('hardlink', 'changed', context)).ok).toBe(false);
+    expect((await env.truncateFile('hardlink', 0, context)).ok).toBe(false);
+    expect(await readFile(join(outside, 'secret'), 'utf8')).toBe('outside-secret');
+  });
   it('enforces policy when called by Pi built-in write and edit tools', async () => {
     const readonly = await createWorkspaceEnvironment({ workspace, mode: 'read-only' });
     const deniedApi = { env: readonly } as unknown as ToolExecutionApi;
@@ -121,14 +174,14 @@ describe('host execution trust', () => {
     }
   });
   it('bounds trusted command output in bytes, and enforces the host execution timeout', async () => {
-    const env = await createWorkspaceEnvironment({ workspace, mode: 'trusted', maxOutputBytes: 127, shellTimeoutMs: 200 });
+    const env = await createWorkspaceEnvironment({ workspace, mode: 'trusted', maxOutputBytes: 127, shellTimeoutMs: 5000 });
     try {
       let output = '';
       const result = await env.exec([process.execPath, '-e', 'process.stdout.write("🌍".repeat(10000))'], { onOutput(chunk) { output += chunk; } }, context);
       expect(result.ok).toBe(true);
       expect(Buffer.byteLength(output)).toBeLessThanOrEqual(127);
       expect(output).not.toContain('\uFFFD');
-      const timed = await env.exec([process.execPath, '-e', 'setInterval(() => {}, 1000)'], { timeout: 30 }, context);
+      const timed = await env.exec([process.execPath, '-e', 'setInterval(() => {}, 1000)'], { timeout: 0.1 }, context);
       expect(timed.ok).toBe(false);
       if (!timed.ok) expect(timed.error.code).toBe('timeout');
       expect((await env.exec('true', { cwd: outside }, context)).ok).toBe(false);

@@ -6,6 +6,8 @@ import type { Context } from '@earendil-works/chord';
 import { NodeExecutionEnv } from '@earendil-works/pi-durable/env/node';
 import { err, ExecutionError, FileError, ok, type ExecutionEnv, type Result, type ShellExecOptions, type ShellExecResult } from '@earendil-works/pi-durable/env';
 
+import { mutateRegularFile, openBoundedBinaryReader, openBoundedTextLineReader, readBoundedFile, readBoundedTextLines } from './files.js';
+
 export type WorkspaceMode = 'read-only' | 'workspace-write' | 'trusted';
 export interface WorkspaceEnvironmentOptions {
   workspace: string;
@@ -225,6 +227,16 @@ export async function createWorkspaceEnvironment(options: WorkspaceEnvironmentOp
           args[0] = await guard(args[0], writeMethods.has(String(property)));
           if (property === 'remove' || property === 'renameFile') { protectedSubtreeMutation(String(args[0])); protectedSubtreeMutation(await canonicalizeMissing(String(args[0]))); }
           if (property === 'renameFile') { args[1] = await guard(args[1], true); protectedSubtreeMutation(String(args[1])); protectedSubtreeMutation(await canonicalizeMissing(String(args[1]))); }
+          const path = String(args[0]);
+          const context = args[args.length - 1] as Context;
+          if (property === 'openBinaryReader') return openBoundedBinaryReader(base, path, args[1] as { noFollow?: boolean } | undefined, context);
+          if (property === 'openTextLineReader') return openBoundedTextLineReader(base, path, context);
+          if (property === 'readTextLines') return readBoundedTextLines(base, path, args[1] as { maxLines?: number } | undefined, context);
+          if (property === 'readTextFile' || property === 'readBinaryFile') {
+            const bytes = await readBoundedFile(base, path, context);
+            return bytes.ok && property === 'readTextFile' ? ok(Buffer.from(bytes.value).toString('utf8')) : bytes;
+          }
+          if (property === 'writeFile' || property === 'appendFile' || property === 'truncateFile' || property === 'flushFile') return mutateRegularFile(path, property, args[1], context);
           const result = await Reflect.apply(method, target, args) as unknown;
           const visible = (entry: { path: string }): boolean => {
             try { checkProtected(entry.path, false); return true; } catch { return false; }

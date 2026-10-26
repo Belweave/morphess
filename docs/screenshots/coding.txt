@@ -1,0 +1,36 @@
+  morphess                                                                                  DEMO · offline-demo  BUILD
+  Independent harness for Morph inference · not official or Morph-backed
+  /private/var/folders/bj/wt9g4l715m99l7rz2rjbtxkc0000gn/T/morphess-demo-eyEXyu  /  session 1
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+                                                                                         │
+  You                                                                                    │  SESSION 1
+  Read the demo workspace and explain what is available.                                 │  morphess-demo-eyEXyu
+                                                                                         │
+  [+] read  done · Ctrl+T inspect                                                        │  MODEL
+  # Morphess demo This temporary workspace uses an offline scripted provider.            │  offline-demo
+                                                                                         │
+  [+] ask_user  done · Ctrl+T inspect                                                    │  CONTEXT
+  Explain durable recovery                                                               │  2.8k / 1m tokens
+                                                                                         │
+  Morphess                                                                               │  USAGE
+  Ready to build                                                                         │  2.4k input
+                                                                                         │  123 output
+  I read README.md using the real file tool and received your answer through a durable   │  4.7k cache read
+  question.                                                                              │  $0.0000 reported
+                                                                                         │
+  - Press Ctrl+T to inspect tool activity.                                               │  PLAN
+  - Use /plan to restrict tools while planning.                                          │  No plan yet
+  - Press Ctrl+O to switch sessions without losing a draft.                              │
+                                                                                         │  Ctrl+B hides inspector
+  This is a scripted offline demo; no inference endpoint was called.                     │
+                                                                                         │
+                                                                                         │
+                                                                                         │
+ ┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+ │ BUILD  ·  workspace-write                                                                                          │
+ │ Ask Morphess to inspect, build, or fix something…                                                                  │
+ │                                                                                                                    │
+ │                                                                                                                    │
+ └────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+Ready  ·  ~2.8k / 1m context  ·  123 output  ·  $0.0000
+Enter send   Shift+Enter newline   Ctrl+P commands   Ctrl+O sessions   Ctrl+B inspector   Ctrl+Q quit

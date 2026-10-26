@@ -125,9 +125,10 @@ export function createWorkspaceTools(options: { workspace: string; maxOutputByte
           let skippedFiles = 0;
           let truncated = listing.truncated;
           let outputBytes = 0;
+          const deadline = Date.now() + 10_000;
           for (const path of listing.paths) {
             if (context.abortSignal?.aborted) throw new Error('Operation aborted');
-            if (scannedBytes >= MAX_SCAN_BYTES || matches.length >= maxResults || outputBytes >= options.maxOutputBytes) { truncated = true; break; }
+            if (Date.now() > deadline || scannedBytes >= MAX_SCAN_BYTES || matches.length >= maxResults || outputBytes >= options.maxOutputBytes) { truncated = true; break; }
             const file = path ? join(directory, path) : directory;
             const opened = await env.openBinaryReader(file, { noFollow: true }, context);
             if (!opened.ok) { skippedFiles++; continue; }
@@ -138,13 +139,18 @@ export function createWorkspaceTools(options: { workspace: string; maxOutputByte
               scannedBytes += data.byteLength;
               if (data.includes(0)) { skippedFiles++; continue; }
               scannedFiles++;
-              const lines = new TextDecoder().decode(data).split('\n');
-              for (let index = 0; index < lines.length; index++) {
-                const line = lines[index]!;
+              const content = new TextDecoder().decode(data);
+              let start = 0;
+              for (let index = 0; start <= content.length; index++) {
+                if (index % 128 === 0 && (context.abortSignal?.aborted || Date.now() > deadline)) { truncated = true; break; }
+                const newline = content.indexOf('\n', start);
+                const end = newline < 0 ? content.length : newline;
+                const line = content.slice(start, end);
+                start = newline < 0 ? content.length + 1 : newline + 1;
                 const haystack = args.caseSensitive === false ? line.toLocaleLowerCase('en-US') : line;
                 const position = haystack.indexOf(query);
                 if (position < 0) continue;
-                const display = `${relative(env.cwd, file)}:${index + 1}:${truncateUtf8(line.slice(Math.max(0, position - 120)), 600)}`;
+                const display = `${relative(env.cwd, file)}:${index + 1}:${truncateUtf8(line.slice(Math.max(0, position - 120), Math.max(0, position - 120) + 600), 600)}`;
                 matches.push(display);
                 outputBytes += Buffer.byteLength(display) + 1;
                 if (matches.length >= maxResults || outputBytes >= options.maxOutputBytes) { truncated = true; break; }
@@ -153,6 +159,30 @@ export function createWorkspaceTools(options: { workspace: string; maxOutputByte
           }
           if (skippedFiles) truncated = true;
           return result((matches.length ? matches.join('\n') : 'No matches in scanned files.') + (truncated ? '\n[Search incomplete: limits or skipped files; narrow the path.]' : ''), options.maxOutputBytes, { scannedFiles, scannedBytes, skippedFiles, incomplete: truncated });
+        },
+      }),
+      defineTool({
+        name: 'read_bytes',
+        description: 'Read a bounded byte range from a regular workspace file without scanning preceding lines. Useful for very large files; UTF-8 ranges may begin or end within a character. Use base64 for binary data.',
+        parameters: Type.Object({ path: Type.String(), offset: Type.Optional(Type.Integer({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER })), length: Type.Optional(Type.Integer({ minimum: 1, maximum: 1024 * 1024 })), encoding: Type.Optional(Type.Union([Type.Literal('utf8'), Type.Literal('base64')])) }),
+        replay: 'safe',
+        outputLimits: limits,
+        async execute(args, api, context) {
+          const env = environment(api);
+          const path = scopedPath(env, args.path);
+          const reader = getOrThrow(await env.openBinaryReader(path, undefined, context));
+          try {
+            const metadata = getOrThrow(await reader.info(context));
+            const offset = args.offset ?? 0;
+            const encoding = args.encoding ?? 'utf8';
+            const available = Math.max(1, options.maxOutputBytes - 96);
+            const budget = encoding === 'base64' ? Math.max(1, Math.floor(available / 4) * 3) : available;
+            const bytes = getOrThrow(await reader.read(offset, Math.min(args.length ?? 16 * 1024, budget), context));
+            if (encoding === 'utf8' && bytes.includes(0)) throw new Error('Range contains binary data; use encoding base64');
+            const value = Buffer.from(bytes).toString(encoding);
+            const nextOffset = offset + bytes.length;
+            return result(`Bytes ${offset}-${nextOffset} of ${metadata.size}; next offset ${nextOffset}.\n${value}`, options.maxOutputBytes, { offset, nextOffset, totalBytes: metadata.size, encoding });
+          } finally { await reader.close(context); }
         },
       }),
       ...(['git_status', 'git_diff'] as const).map((name) => defineTool({

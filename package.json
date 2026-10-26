@@ -1,22 +1,42 @@
 {
   "name": "@belweave/morphess",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
-  "description": "A durable multimodal coding agent built on Pi Durable",
+  "description": "An independent durable coding harness for Morph inference and OpenAI-compatible models",
   "type": "module",
   "license": "UNLICENSED",
-  "engines": { "node": ">=22.19.0" },
-  "bin": { "morphess": "./dist/cli.js" },
-  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
-  "files": ["dist", "README.md", "docs", "morphess.example.json", "LICENSE", "THIRD_PARTY_NOTICES.md"],
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "bin": {
+    "morphess": "./dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "docs",
+    "morphess.example.json",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
+    "test": "node scripts/test.mjs",
     "check": "npm run typecheck && npm test && npm run build",
     "dev": "tsx src/cli.ts",
     "start": "node dist/cli.js",
-    "eval": "npm run build && tsx scripts/eval.ts"
+    "eval": "npm run build && tsx scripts/eval.ts",
+    "brand": "tsx scripts/brand.ts",
+    "tui": "npm run build && node dist/cli.js tui",
+    "tui:demo": "npm run build && node dist/cli.js tui --demo",
+    "benchmark:stream": "node --expose-gc --import tsx scripts/benchmark-stream.ts"
   },
   "dependencies": {
     "@earendil-works/chord": "1.4.0",
@@ -24,11 +44,14 @@
     "@earendil-works/pi-codemode": "1.4.0",
     "@earendil-works/pi-durable": "1.4.0",
     "@modelcontextprotocol/sdk": "^1.26.0",
+    "@opentui/core": "0.7.0",
     "commander": "^14.0.2",
     "proper-lockfile": "^4.1.2",
+    "web-tree-sitter": "0.25.10",
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@resvg/resvg-js": "2.6.2",
     "@types/node": "^24.10.0",
     "@types/proper-lockfile": "^4.1.4",
     "tsx": "^4.21.0",

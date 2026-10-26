@@ -27,6 +27,7 @@ import { createPersona } from './prompt.js';
 import { WorkspaceDoc } from './state.js';
 import { parseRecordId } from './ids.js';
 import { createConcurrencyExtension } from './concurrency.js';
+import { createQuestionsExtension, createNonInteractiveQuestionsExtension } from '../interaction/index.js';
 
 export interface RuntimeOptions {
   models?: Models;
@@ -36,6 +37,8 @@ export interface RuntimeOptions {
   /** Tune only when the host can guarantee bounded event-loop pauses; stale lock recovery is time based. */
   writerLock?: { staleMs: number; updateMs?: number };
   onReport?: (error: unknown, info: unknown) => void;
+  /** Line-oriented/batch hosts ask for missing input in final text rather than opening new durable questions. */
+  nonInteractive?: boolean;
 }
 
 export class MorphessRuntime {
@@ -75,8 +78,14 @@ export class MorphessRuntime {
       registry.install(CodingTools);
       registry.install(createWorkspaceTools({ workspace: config.workspace, maxOutputBytes: config.policy.maxOutputBytes }));
       registry.install(createPersona(config.policy.mode));
-      registry.install(await createInstructionExtension({ workspace: config.workspace }));
+      registry.install(await createInstructionExtension({ workspace: config.workspace, protectedPaths: [config.stateDir] }));
       registry.install(createWorkExtension());
+      registry.install(createQuestionsExtension({ getHarness: () => {
+        if (!harness) throw new Error('Harness is not open');
+        return harness;
+      } }));
+      // Always register the stable extension name: child selections persist across host types.
+      registry.install(createNonInteractiveQuestionsExtension({ enabled: options.nonInteractive === true }));
       registry.install(createDelegationExtension(config.limits));
       registry.install(createToolSearchExtension());
       if (config.codemode) {

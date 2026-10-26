@@ -6,7 +6,7 @@ import { stdin, stdout, stderr } from 'node:process';
 import { pathToFileURL } from 'node:url';
 import { Command } from 'commander';
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context';
-import { watchEvents, type Cursor } from '@earendil-works/pi-durable';
+import { watchEvents, type Cursor, type Conversation } from '@earendil-works/pi-durable';
 import { defaultConfig, loadConfig } from './config.js';
 import { MorphessRuntime } from './runtime/runtime.js';
 import { withImages } from './media/input.js';
@@ -14,7 +14,8 @@ import { serve } from './http/server.js';
 
 export function createCli() {
   const program = new Command().name('morphess').description('A durable coding agent built on Pi Durable')
-    .version('0.1.0').option('-c, --config <file>', 'configuration file').option('-C, --workspace <directory>', 'workspace directory').option('--trusted', 'allow unrestricted host shell execution');
+    .version('0.2.0').option('-c, --config <file>', 'configuration file').option('-C, --workspace <directory>', 'workspace directory').option('--trusted', 'allow unrestricted host shell execution')
+    .addHelpText('after', '\nMorphess is an independent, unofficial harness for Morph inference.\nIt is not developed, endorsed, sponsored, or backed by Morph.\n');
 
   async function config() {
     const options = program.opts<{ config?: string; workspace?: string; trusted?: boolean }>();
@@ -23,16 +24,31 @@ export function createCli() {
     return loaded;
   }
 
-  async function usingRuntime<T>(run: (runtime: MorphessRuntime) => Promise<T>): Promise<T> {
+  async function usingRuntime<T>(run: (runtime: MorphessRuntime, target: (conversation: Conversation) => void) => Promise<T>, terminal = false, questions = true): Promise<T> {
     const runtime = await MorphessRuntime.open(await config(), { onReport: (_error, info) => {
       // Report categories only; provider diagnostics may contain credentials or private payloads.
       stderr.write(`[morphess] ${JSON.stringify(info)}\n`);
-    } });
-    const interrupt = () => { void runtime.root.abort(BACKGROUND_CONTEXT, { background: true }).catch(() => {}); };
-    process.on('SIGINT', interrupt);
-    try { return await run(runtime); }
+    }, nonInteractive: !questions });
+    let target = runtime.root;
+    const interrupt = () => { void target.abort(BACKGROUND_CONTEXT, { background: true }).catch(() => {}); };
+    if (!terminal) process.on('SIGINT', interrupt);
+    try { return await run(runtime, conversation => { target = conversation; }); }
     finally { process.off('SIGINT', interrupt); await runtime.close(); }
   }
+
+  program.command('tui', { isDefault: true }).description('Open the focused coding workspace (Node 26.4+, native OpenTUI)')
+    .option('-s, --session <id>', 'existing conversation', 'root').option('--demo', 'use a temporary workspace and offline scripted provider')
+    .action(async (options: { session: string; demo?: boolean }) => {
+      if (!stdin.isTTY || !stdout.isTTY) throw new Error('The TUI requires a terminal; use run - for piped input');
+      const { bootstrapTerminal } = await import('./tui/bootstrap.js');
+      if (await bootstrapTerminal()) return;
+      const { launchTui } = await import('./tui/app.js');
+      if (options.demo) {
+        const { openDemoRuntime } = await import('./tui/demo.js');
+        const demo = await openDemoRuntime();
+        try { await launchTui(demo.runtime, { demo: true }); } finally { await demo.close(); }
+      } else await usingRuntime(runtime => launchTui(runtime, { sessionId: options.session }), true);
+    });
 
   program.command('init').description('Write a configuration template without overwriting existing configuration')
     .action(async () => {
@@ -73,8 +89,9 @@ export function createCli() {
         prompt = Buffer.concat(chunks).toString('utf8');
       }
       if (!prompt.trim()) throw new Error('Provide a task or pipe a prompt to morphess run -');
-      await usingRuntime(async (runtime) => {
+      await usingRuntime(async (runtime, setTarget) => {
         const conversation = await runtime.conversation(options.session);
+        setTarget(conversation);
         const watch = options.events ? await watchEvents(runtime.harness, conversation.id, BACKGROUND_CONTEXT) : undefined;
         if (watch) {
           stdout.write(`${JSON.stringify(watch.snapshot)}\n`);
@@ -92,13 +109,14 @@ export function createCli() {
             stderr.write(`Run ${answer.submission.id} ended: ${answer.submission.reason}\n`);
           }
         } finally { await watch?.stop(); }
-      });
+      }, false, false);
     });
 
   program.command('chat').description('Interactive persistent terminal conversation').option('-s, --session <id>', 'conversation', 'root')
-    .action(async (options: { session: string }) => usingRuntime(async (runtime) => {
+    .action(async (options: { session: string }) => usingRuntime(async (runtime, setTarget) => {
       if (!stdin.isTTY) throw new Error('Interactive chat requires a terminal; use run - for piped input');
       let conversation = await runtime.conversation(options.session);
+      setTarget(conversation);
       const terminal = createInterface({ input: stdin, output: stdout });
       stdout.write(`Morphess · ${runtime.config.model.id} · ${runtime.config.policy.mode}\nSession ${conversation.id}. /new /status /compact /quit\n`);
       try {
@@ -107,7 +125,7 @@ export function createCli() {
           try { prompt = (await terminal.question('› ')).trim(); } catch { break; }
           if (!prompt) continue;
           if (prompt === '/quit' || prompt === '/exit') break;
-          if (prompt === '/new') { conversation = await runtime.createConversation(); stdout.write(`Session ${conversation.id}\n`); continue; }
+          if (prompt === '/new') { conversation = await runtime.createConversation(); setTarget(conversation); stdout.write(`Session ${conversation.id}\n`); continue; }
           if (prompt === '/status') { stdout.write(`${JSON.stringify(await runtime.contextBudget(conversation.id), null, 2)}\n`); continue; }
           if (prompt === '/compact') { stdout.write(`Compaction task ${await conversation.compact(undefined, BACKGROUND_CONTEXT)}\n`); continue; }
           const submission = await conversation.submit({ type: 'input', content: prompt }, BACKGROUND_CONTEXT);
@@ -115,7 +133,7 @@ export function createCli() {
           stdout.write(`${answer.text || JSON.stringify(answer.submission)}\n`);
         }
       } finally { terminal.close(); }
-    }));
+    }, false, false));
 
   program.command('serve').description('Serve sessions, durable events, and an OpenAI-compatible chat gateway')
     .option('--host <host>', 'bind address').option('--port <port>', 'bind port', Number)
@@ -128,7 +146,7 @@ export function createCli() {
           process.once('SIGINT', done); process.once('SIGTERM', done);
         });
       } finally { await host.close(); }
-    }));
+    }, true));
 
   program.command('sessions').description('List persisted conversations').action(async () => usingRuntime(async (runtime) => {
     let cursor: Cursor | undefined;

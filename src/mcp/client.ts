@@ -38,7 +38,7 @@ export async function connectMcpServers(configs: McpServerConfig[], options: {
   env?: NodeJS.ProcessEnv;
 } = {}): Promise<{ extensions: Extension[]; close(): Promise<void> }> {
   const extensions: Extension[] = [];
-  const connections: Array<{ client: Client; transport: Transport }> = [];
+  const connections: Array<{ client: Client; transport: Transport; timeoutMs: number }> = [];
   const names = new Set<string>();
   let closed = false;
   const close = async (): Promise<void> => {
@@ -46,6 +46,15 @@ export async function connectMcpServers(configs: McpServerConfig[], options: {
     closed = true;
     const errors: unknown[] = [];
     for (const connection of connections.reverse()) {
+      if (connection.transport instanceof StreamableHTTPClientTransport) {
+        const transport = connection.transport;
+        // SDK close() only aborts local streams. Explicit DELETE releases a stateful
+        // server session; abort the transport if that request stalls during shutdown.
+        const deadline = setTimeout(() => { void transport.close().catch(() => {}); }, Math.min(connection.timeoutMs, 5_000));
+        deadline.unref();
+        try { await transport.terminateSession(); } catch (error) { errors.push(error); }
+        finally { clearTimeout(deadline); }
+      }
       try { await connection.client.close(); } catch (error) { errors.push(error); }
       // Failed initialize may not have attached the transport to the client yet.
       try { await connection.transport.close(); } catch (error) { errors.push(error); }
@@ -74,7 +83,7 @@ export async function connectMcpServers(configs: McpServerConfig[], options: {
         });
       }
       const client = new Client({ name: 'morphess', version: '0.1.0' }, { capabilities: {} });
-      connections.push({ client, transport });
+      connections.push({ client, transport, timeoutMs: config.timeoutMs });
       const setupSignal = AbortSignal.timeout(config.timeoutMs);
       await client.connect(transport, { timeout: config.timeoutMs, signal: setupSignal });
       const catalog: Tool[] = [];

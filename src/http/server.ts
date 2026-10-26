@@ -9,6 +9,7 @@ import { MorphessRuntime } from '../runtime/runtime.js';
 import { parseRecordId } from '../runtime/ids.js';
 import { chatRequestSchema, fromOpenAIContent, inputContentSchema } from './input.js';
 import { acquireChatConversation } from './idempotency.js';
+import { answerQuestion, listQuestions } from '../interaction/index.js';
 
 class HttpError extends Error {
   constructor(readonly status: number, message: string) { super(message); }
@@ -20,13 +21,13 @@ function json(response: ServerResponse, status: number, value: unknown) {
 }
 
 async function body(request: IncomingMessage): Promise<unknown> {
-  if (!request.headers['content-type']?.toLowerCase().startsWith('application/json')) throw new HttpError(415, 'Use application/json');
+  if (request.headers['content-type']?.split(';', 1)[0]?.trim().toLowerCase() !== 'application/json') throw new HttpError(415, 'Use application/json');
   const chunks: Buffer[] = [];
   let bytes = 0;
   for await (const chunk of request) {
     bytes += Buffer.byteLength(chunk);
     if (bytes > 24 * 1024 * 1024) throw new HttpError(413, 'Request exceeds 24 MiB');
-    chunks.push(Buffer.from(chunk));
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
   }
   try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); }
   catch { throw new HttpError(400, 'Invalid JSON'); }
@@ -48,9 +49,14 @@ async function writeFrame(response: ServerResponse, value: unknown, event?: stri
   const frame = `${event ? `event: ${event}\n` : ''}data: ${typeof value === 'string' ? value : JSON.stringify(value)}\n\n`;
   if (!response.write(frame)) {
     // A stalled consumer must not retain a watch and arbitrarily large transcript forever.
-    const signal = AbortSignal.timeout(30_000);
-    try { await once(response, 'drain', { signal }); }
-    catch { response.destroy(); }
+    const controller = new AbortController();
+    const closed = () => controller.abort(new Error('Response closed'));
+    response.once('close', closed);
+    const signal = AbortSignal.any([AbortSignal.timeout(30_000), controller.signal]);
+    try {
+      if (!response.destroyed && !response.writableEnded) await once(response, 'drain', { signal });
+    } catch { response.destroy(); }
+    finally { response.off('close', closed); }
   }
 }
 
@@ -58,6 +64,9 @@ function safeError(error: unknown): { status: number; message: string } {
   if (error instanceof HttpError) return { status: error.status, message: error.message };
   if (error instanceof ConversationBusy) return { status: 409, message: 'Conversation is busy' };
   if (error instanceof StorageRequestError) return { status: 400, message: 'Invalid record or cursor' };
+  if (error instanceof Error && /^(Question not found|Conversation not found(?::|$))/.test(error.message)) return { status: 404, message: error.message };
+  if (error instanceof Error && /^Question (was already answered differently|is |has expired)/.test(error.message)) return { status: 409, message: error.message };
+  if (error instanceof Error && /^(Answer must |Question ID must )/.test(error.message)) return { status: 400, message: error.message };
   if (error instanceof Error && error.message.startsWith('Idempotency-Key already used')) return { status: 409, message: error.message };
   if (error instanceof z.ZodError) return { status: 400, message: error.issues.map((issue) => `${issue.path.join('.')}: ${issue.message}`).join('; ') };
   if (error instanceof Error && /^(Expected |Conversation not found:|Submission not found:|Images require |This model profile|Image input|Conversation history |The last message |System instructions |Idempotency-Key must)/.test(error.message)) return { status: 400, message: error.message };
@@ -84,11 +93,11 @@ export async function serve(runtime: MorphessRuntime, options: ServeOptions = {}
   const maxStreams = options.maxEventStreams ?? 32;
   const server = createServer((request, response) => {
     if (active.size >= 64) { json(response, 503, { error: { message: 'Host request capacity reached' } }); return; }
-    const handling = handle(request, response).catch((error: unknown) => {
+    const handling = handle(request, response).catch(async (error: unknown) => {
       if (response.destroyed) return;
       const safe = safeError(error);
       if (safe.status === 500) options.onError?.(error);
-      if (response.headersSent) { void writeFrame(response, { error: { message: safe.message } }).finally(() => response.end()); }
+      if (response.headersSent) { await writeFrame(response, { error: { message: safe.message } }); response.end(); }
       else json(response, safe.status, { error: { message: safe.message, type: safe.status === 401 ? 'authentication_error' : 'invalid_request_error' } });
     }).finally(() => active.delete(handling));
     active.add(handling);
@@ -134,6 +143,22 @@ export async function serve(runtime: MorphessRuntime, options: ServeOptions = {}
         json(response, 200, await submission.status(BACKGROUND_CONTEXT));
       }
       return;
+    }
+    // Human answers use native durable task IDs. They are an explicit API action,
+    // separate from the OpenAI model transcript and subject to the same auth.
+    const questionMatch = /^\/v1\/sessions\/(root|\d+)\/questions(?:\/([^/]+)\/answer)?$/.exec(url.pathname);
+    if (questionMatch) {
+      const conversation = await runtime.conversation(questionMatch[1]!);
+      if (questionMatch[2] === undefined && request.method === 'GET') {
+        json(response, 200, { items: await listQuestions(runtime.harness, conversation.id, BACKGROUND_CONTEXT) }); return;
+      }
+      if (questionMatch[2] !== undefined && request.method === 'POST') {
+        const id = parseRecordId(questionMatch[2]);
+        if (id < 1) throw new HttpError(400, 'Question ID must be a positive safe integer');
+        const data = z.strictObject({ answer: z.string().min(1).max(50_000).refine(value => value.trim().length > 0, 'Answer cannot be blank') }).parse(await body(request));
+        json(response, 200, await answerQuestion(runtime.harness, conversation.id, id, data.answer, BACKGROUND_CONTEXT)); return;
+      }
+      throw new HttpError(405, 'Method not allowed');
     }
     const sessionMatch = /^\/v1\/sessions\/(root|\d+)\/(inputs|entries|events|abort|compact|fork|context)$/.exec(url.pathname);
     if (!sessionMatch) throw new HttpError(404, 'Route not found');
@@ -208,6 +233,10 @@ export async function serve(runtime: MorphessRuntime, options: ServeOptions = {}
   }
 
   async function chatRun(request: IncomingMessage, response: ServerResponse, data: z.infer<typeof chatRequestSchema>) {
+    const controller = new AbortController();
+    response.once('close', () => controller.abort());
+    if (response.destroyed) controller.abort();
+    const context = withAbortSignal(controller.signal, BACKGROUND_CONTEXT);
     if (data.model !== runtime.config.model.id) throw new HttpError(404, 'Unknown model');
     const last = data.messages.at(-1)!;
     if (last.role !== 'user') throw new Error('The last message must have role user');
@@ -238,9 +267,6 @@ export async function serve(runtime: MorphessRuntime, options: ServeOptions = {}
       fingerprint: createHash('sha256').update(JSON.stringify({ model: data.model, messages: data.messages, conversation_id: data.conversation_id })).digest('hex'),
       conversationId: data.conversation_id, instructions: system.map((message) => message.content).join('\n\n') || undefined, history,
     });
-    const controller = new AbortController();
-    response.once('close', () => controller.abort());
-    const context = withAbortSignal(controller.signal, BACKGROUND_CONTEXT);
     const id = `chatcmpl-${randomUUID()}`;
     const created = Math.floor(Date.now() / 1000);
     const chunk = (delta: unknown, finishReason: string | null = null) => ({ id, object: 'chat.completion.chunk', created, model: data.model, choices: [{ index: 0, delta, finish_reason: finishReason }] });
@@ -256,9 +282,18 @@ export async function serve(runtime: MorphessRuntime, options: ServeOptions = {}
     if (data.stream) streams.add(response);
     try {
     watch = data.stream ? await watchEvents(runtime.harness, conversation.id, context) : undefined;
+    // Attach the watch atomically first, then admit input before committing HTTP
+    // headers. Busy and idempotency errors must retain their HTTP status.
+    const submission = await conversation.submit({ type: 'input', content: inputs.at(-1)!.content, requestId, whenBusy: 'reject' }, BACKGROUND_CONTEXT);
     if (watch) {
       sseHeaders(response);
       await writeFrame(response, chunk({ role: 'assistant' }));
+      const existingPartial = watch.snapshot.run?.inputs.includes(submission.id) ? watch.snapshot.generation?.message : undefined;
+      if (existingPartial) {
+        existingPartial.content.forEach((block, index) => { if (block.type === 'text') textBlocks.set(index, block.text); });
+        currentText = [...textBlocks.values()].join(''); currentTimestamp = existingPartial.timestamp; inProgress = true;
+        if (currentText) await writeFrame(response, chunk({ content: currentText }));
+      }
       watch.start(async (batch) => {
         delivery = delivery.then(async () => {
         for (const event of batch) {
@@ -299,7 +334,6 @@ export async function serve(runtime: MorphessRuntime, options: ServeOptions = {}
         await delivery;
       });
     }
-      const submission = await conversation.submit({ type: 'input', content: inputs.at(-1)!.content, requestId, whenBusy: 'reject' }, BACKGROUND_CONTEXT);
       const answer = await runtime.answer(submission.id, context);
       acceptingEvents = false;
       await watch?.stop();
@@ -330,16 +364,17 @@ export async function serve(runtime: MorphessRuntime, options: ServeOptions = {}
   });
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('Expected a TCP listener');
+  let closing: Promise<void> | undefined;
   return {
     server,
     url: `http://${host.includes(':') ? `[${host}]` : host}:${address.port}`,
-    close: async () => {
+    close: () => closing ??= (async () => {
       for (const response of streams) response.destroy();
       const closed = new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
       server.closeAllConnections();
       await closed;
       await Promise.allSettled(active);
-    },
+    })(),
   };
 }
 

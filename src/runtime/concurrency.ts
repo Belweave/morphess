@@ -30,13 +30,13 @@ export class Semaphore {
   }
 }
 
-/** Delegation/code mode wait on child tools, so their own durable admission owns their bounds. */
+/** Waiting orchestration tools own independent admission; they must not hold execution permits. */
 export function createConcurrencyExtension(tools: readonly ToolRegistration[], capacity: number) {
   const semaphore = new Semaphore(capacity);
   return defineExtension({
     name: 'morphess.execution-bounds',
     wraps: [...new Map(tools.map((tool) => [tool.name, tool])).values()]
-      .filter((tool) => !['delegate', 'codemode'].includes(tool.name))
+      .filter((tool) => !['delegate', 'codemode', 'ask_user'].includes(tool.name))
       .map((tool) => wrapTool(tool, (resolved) => ({
         ...resolved,
         executionMode: ['bash', 'write', 'edit'].includes(resolved.name) ? 'sequential' : resolved.executionMode,

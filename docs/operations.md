@@ -20,7 +20,7 @@ Chat compatibility flags are `supportsStore`, `supportsDeveloperRole`, `supports
 | workspace-write | Workspace | Workspace | Denied |
 | trusted | Workspace through file tools | Workspace through file tools | Full host authority |
 
-The environment rejects traversal, outside absolute paths, escaping/dangling symlinks, state-directory access, and file-tool mutations under `.git`. Narrow read capabilities use fixed absolute host Git/ripgrep executables, not workspace-controlled PATH binaries. Search has a portable bounded fallback. Linked Git worktrees are unsupported by guarded Git helpers.
+The environment rejects traversal, outside absolute paths, escaping/dangling symlinks, state-directory access, and file-tool mutations under `.git`. Narrow read capabilities use fixed absolute host Git/ripgrep executables, not workspace-controlled PATH binaries. Search has a portable bounded fallback; without ripgrep that fallback does not implement gitignore semantics. File handles must refer to regular files, reads/scans/lines are bounded, and multiply linked files cannot be mutated. Linked Git worktrees are unsupported by guarded Git helpers.
 
 The configured state directory and `.morphess` are protected; tool temp output lives in `.morphess-tmp`. A hostile concurrent filesystem process can race path checks, so this is defense in depth. Trusted ESM plugins and MCP executables can access the host independently of file-tool policy. Use an external container/VM boundary for untrusted code.
 
@@ -34,7 +34,7 @@ One process owns a state directory. Clean close releases the writer lock. After 
 
 Pi parks a task after five interrupted restarts at one checkpoint. Inspect through `/v1/tasks`; library hosts can diagnose and call `harness.retryTask` or `abortTask`. There is no CLI repair command yet.
 
-Host close preserves resumable work. Explicit session abort stops its ownership subtree. HTTP disconnect cancels only the waiter. CLI SIGINT requests root cancellation; use the session abort API for an explicitly selected different session. `serve` handles SIGTERM.
+Host close preserves resumable work. Explicit session abort stops its ownership subtree. HTTP disconnect cancels only the waiter. CLI run/chat SIGINT targets the selected conversation. TUI Escape aborts the selected ownership subtree; Ctrl+Q preserves work. `serve` closes cleanly on SIGINT/SIGTERM and leaves accepted work recoverable.
 
 SQLite WAL/NORMAL protects against process crashes but may lose latest commits on power/machine failure. Stop the host before copying the database with its WAL files, or use an SQLite-aware backup. Copying an active database file alone is insufficient.
 
@@ -57,7 +57,7 @@ These numbers illustrate configuration, not actual prices. Admission reserves th
 
 ## Attachments and serving
 
-The CLI accepts up to 16 PNG/JPEG/GIF/WebP images, each at most 4 MiB. Content-addressed copies are stored in `<stateDir>/artifacts`; image blocks also remain in Pi's transcript. This is not complete transcript blob offloading. Native image reads apply Pi's image limits. Audio/video/PDF native model blocks are unsupported.
+CLI/TUI/API inputs accept up to 16 PNG/JPEG/GIF/WebP images, each at most 4 MiB and at most 16 MiB in aggregate. Header signatures and dimensions are checked without decoding rasters. Content-addressed copies are stored in `<stateDir>/artifacts`; image blocks also remain in Pi's transcript. This is not complete transcript blob offloading. Native image reads apply Pi's image limits. Audio/video/PDF native model blocks are unsupported. OpenAI image detail low/high is rejected because Pi cannot preserve those per-image semantics; use auto or omit it.
 
 Default HTTP is `127.0.0.1:8787`. A non-loopback bind requires the environment token named by `server.tokenEnv`. Except minimal `/health`, routes require that token when configured. Browser Origin requests are rejected; this is a headless API without CORS UI. Add TLS and external identity controls for exposure beyond a trusted environment. The token authorizes the entire host, not an individual tenant.
 
@@ -66,3 +66,9 @@ Bodies are limited to 24 MiB, requests/connections to 64, streams to 32. Slow SS
 ## Evaluation
 
 `npm run check` typechecks, tests offline with two workers, and builds. `npm run eval` drives the compiled CLI against a scripted local Chat endpoint and verifies a real coding-tool result. `MORPHESS_EVAL_LARGE=1 npm run eval` adds a multi-megabyte prompt. These demonstrate harness behavior, not live coding quality or advertised 1M-token reasoning.
+
+## Questions and terminal preferences
+
+TUI and HTTP hosts support durable `ask_user` waits, including active child questions. Batch `run` and line-oriented `chat` install a native before-tool guard and prompt instruction directing fresh questions to final text, since these commands have no durable answer interface. Persisted pending questions are deliberately preserved, and arbitrary existing explicit extension selections may omit the guard. Reopen in the TUI or `serve` and answer through its native API to settle such work; `resume` can remain waiting for human input. This is host interaction guidance, not a permission boundary.
+
+The TUI stores bounded draft/history preferences atomically as mode-0600 `ui.json`. They contain user text and should be protected with session databases. Plan mode and its exact saved tool selection use a native Pi conversation document. See [the terminal guide](tui.md).

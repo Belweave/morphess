@@ -97,10 +97,10 @@ export function createBudgetAdmission(
   };
 }
 
-function errorMessage(model: Model<Api>, error: unknown): AssistantMessage {
+function errorMessage(model: Model<Api>, error: unknown, aborted = false): AssistantMessage {
   return {
     role: 'assistant', content: [], api: model.api, provider: model.provider, model: model.id,
-    stopReason: 'error', errorMessage: error instanceof Error ? error.message : 'Model admission failed', timestamp: Date.now(),
+    stopReason: aborted ? 'aborted' : 'error', errorMessage: error instanceof Error ? error.message : 'Model admission failed', timestamp: Date.now(),
     usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
   };
@@ -117,8 +117,9 @@ export function withBudget(models: Models, admit: Admit, maxConcurrentRequests =
       let dispatched = false;
       try {
         release = await semaphore.acquire(options?.signal);
+        options?.signal?.throwIfAborted();
         admission = await admit(options?.sessionId, model);
-        if (options?.signal?.aborted) throw new Error('Model request cancelled before dispatch');
+        options?.signal?.throwIfAborted();
         dispatched = true;
         const source = models[method](model, transcript, options);
         let settled = false;
@@ -133,9 +134,9 @@ export function withBudget(models: Models, admit: Admit, maxConcurrentRequests =
         if (!settled) await admission.settle(result);
         stream.end(result);
       } catch (error) {
-        const message = errorMessage(model, error);
+        const message = errorMessage(model, error, options?.signal?.aborted);
         if (admission && !dispatched) await admission.settle(message, true).catch(() => {});
-        stream.push({ type: 'error', reason: 'error', error: message });
+        stream.push({ type: 'error', reason: message.stopReason === 'aborted' ? 'aborted' : 'error', error: message });
         stream.end(message);
       } finally { release?.(); }
     })();

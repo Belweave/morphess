@@ -89,6 +89,27 @@ describe('durable foreground delegation', () => {
     expect(() => createDelegationExtension({ maxConcurrentAgents: 0, maxAgentDepth: 1 })).toThrow('positive');
   });
 
+  it('preserves an explicit parent extension selection instead of enabling global hooks and sections', async () => {
+    const faux = fauxProvider();
+    let childPrompt = '';
+    faux.setResponses([
+      fauxAssistantMessage(fauxToolCall('delegate', { task: 'inspect', role: 'coder' }), { stopReason: 'toolUse' }),
+      request => { childPrompt = JSON.stringify(request.messages); return fauxAssistantMessage('child complete'); },
+      fauxAssistantMessage('parent complete'),
+    ]);
+    const models = createModels(); models.setProvider(faux.provider);
+    const registry = createRegistry();
+    const delegation = createDelegationExtension({ maxConcurrentAgents: 1, maxAgentDepth: 1 });
+    registry.install(delegation);
+    registry.install(defineExtension({ name: 'disabled-global-extension', sections: [{ key: 'disabled', render: () => 'MUST_NOT_ACTIVATE_IN_CHILD' }] }));
+    const harness = await Harness.open(new MemoryStorage(), { models, registry }, context);
+    try {
+      const root = await harness.root(context, { agent: { model: { provider: 'faux', modelId: 'faux-1' }, extensions: [delegation] } });
+      expect((await (await root.submit({ type: 'input', content: 'delegate' }, context)).wait(context)).status).toBe('done');
+      expect(childPrompt).not.toContain('MUST_NOT_ACTIVATE_IN_CHILD');
+    } finally { await harness.close(context); }
+  });
+
   it('reattaches to the same durable child and submission after a process restart', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'morphess-delegation-')); directories.push(directory);
     const database = join(directory, 'session.sqlite');

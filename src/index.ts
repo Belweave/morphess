@@ -10,5 +10,6 @@ export { loadExtensions, type ExtensionPlugin } from './extensions/loader.js';
 export { connectMcpServers, mcpToolName } from './mcp/client.js';
 export { createWorkExtension, WorkDoc } from './workflow/work.js';
 export { withImages } from './media/input.js';
+export { createQuestionsExtension, createNonInteractiveQuestionsExtension, QuestionsDoc, listQuestions, answerQuestion, type UserQuestion } from './interaction/index.js';
 export { serve, type ServeOptions } from './http/server.js';
 export { Harness, defineExtension, defineTool, hook, section, watchEvents } from '@earendil-works/pi-durable';

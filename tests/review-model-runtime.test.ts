@@ -4,6 +4,8 @@ import { join } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
 import { createModels, fauxAssistantMessage, fauxProvider } from '@earendil-works/pi-ai';
 import { MemoryStorage } from '@earendil-works/pi-durable';
+import { watchEvents } from '@earendil-works/pi-durable';
+import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context';
 import { defaultConfig } from '../src/config.js';
 import { MorphessRuntime } from '../src/runtime/runtime.js';
 import { serve } from '../src/http/server.js';
@@ -92,4 +94,28 @@ it('does not truncate a streamed answer while its listener is backpressured', as
     .flatMap(event => event.choices?.flatMap((choice: { delta: { content?: string } }) => choice.delta.content ?? []) ?? []).join('');
   expect(content.length).toBe(expected.length);
   expect(content).toBe(expected);
+});
+
+it('resumes an idempotent in-flight stream from its committed partial exactly once', async () => {
+  const { faux, runtime, server } = await setup(1_000);
+  const expected = 'abcdefghijklmnopqrstuvwxyz'.repeat(200);
+  faux.setResponses([fauxAssistantMessage(expected)]);
+  const watch = await watchEvents(runtime.harness, runtime.root.id, BACKGROUND_CONTEXT);
+  let partial!: () => void;
+  const committedPartial = new Promise<void>(resolve => { partial = resolve; });
+  watch.start(async events => { if (events.some(event => event.type === 'message_start' && event.message.role === 'assistant')) partial(); });
+  const send = (stream: boolean) => fetch(`${server.url}/v1/chat/completions`, {
+    method: 'POST', headers: { 'content-type': 'application/json', 'idempotency-key': 'resume-in-flight' },
+    body: JSON.stringify({ model: runtime.config.model.id, conversation_id: runtime.root.id, stream, messages: [{ role: 'user', content: 'Produce the answer' }] }),
+  });
+  try {
+    const original = send(false);
+    await committedPartial;
+    const response = await send(true);
+    const content = (await response.text()).split('\n\n').filter(frame => frame.startsWith('data: ') && frame !== 'data: [DONE]').map(frame => JSON.parse(frame.slice(6)))
+      .flatMap(event => event.choices?.flatMap((choice: { delta: { content?: string } }) => choice.delta.content ?? []) ?? []).join('');
+    expect(content).toBe(expected);
+    expect((await (await original).json()).choices[0].message.content).toBe(expected);
+    expect(faux.state.callCount).toBe(1);
+  } finally { await watch.stop(); }
 });

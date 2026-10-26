@@ -16,6 +16,8 @@ Run `node dist/cli.js serve`. Send JSON with `Content-Type: application/json` an
 | GET | `/v1/sessions/:id/entries?limit=100&cursor=...` | Ascending history and opaque `next` cursor |
 | GET | `/v1/sessions/:id/events` | SSE committed events, control snapshot first |
 | GET | `/v1/sessions/:id/context` | Approximate context budget |
+| GET | `/v1/sessions/:id/questions` | `{items}` containing live durable user questions |
+| POST | `/v1/sessions/:id/questions/:questionId/answer` | `{answer}`; return the answered question |
 | POST | `/v1/sessions/:id/abort` | Abort ownership subtree, including background |
 | POST | `/v1/sessions/:id/compact` | `{instructions?}`; 202 `{taskId}` |
 | POST | `/v1/sessions/:id/fork` | `{at:entryId}`; 201 `{id}` |
@@ -33,6 +35,8 @@ curl -N http://127.0.0.1:8787/v1/sessions/root/events
 ```
 
 Disconnect cancels the wait, not accepted work. Event subscribers reconnect to a new committed control snapshot and page history separately. Tool details identify child conversations. Native event types follow Pi's experimental vocabulary.
+
+An `ask_user` tool waits for a real answer, potentially across host restarts. Read pending questions and submit a freeform answer through the native routes above. Suggestions are optional; sending the same answer again is idempotent. A different second answer, an expired question, or a cancelled owning task returns 409. Missing records return 404; invalid input returns 400. These endpoints authorize no extra tool permissions. Child questions belong to their child conversation ID. A Chat Completions request can remain open while a separate native API client answers its question; the OpenAI wire format has no added question event.
 
 ## OpenAI-compatible chat gateway
 

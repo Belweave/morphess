@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, open, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context';
@@ -78,6 +78,17 @@ describe('workspace tools', () => {
     const diff = text(await run('git_diff', {}));
     expect(diff).not.toContain('private session');
     expect(diff).toBe('(clean)');
+  });
+  it('reads bounded ranges from large files without scanning preceding bytes', async () => {
+    const path = join(workspace, 'large.log'); const handle = await open(path, 'w');
+    await handle.truncate(256 * 1024 * 1024); await handle.write(Buffer.from('large-file tail'), 0, 15, 200 * 1024 * 1024); await handle.close();
+    const read = await run('read_bytes', { path: 'large.log', offset: 200 * 1024 * 1024, length: 15 });
+    expect(text(read)).toContain('large-file tail');
+    expect(read.details).toMatchObject({ offset: 200 * 1024 * 1024, nextOffset: 200 * 1024 * 1024 + 15 });
+    const binary = await run('read_bytes', { path: 'large.log', length: 10, encoding: 'base64' });
+    expect(text(binary)).toContain(Buffer.alloc(10).toString('base64'));
+    await expect(run('read_bytes', { path: '../outside.txt' })).rejects.toThrow('outside');
+    expect(Buffer.byteLength(text(await run('read_bytes', { path: 'large.log', length: 1024 * 1024, encoding: 'base64' }, 512)))).toBeLessThanOrEqual(512);
   });
   it('declares every workspace tool replay-safe', () => {
     for (const tool of createWorkspaceTools({ workspace, maxOutputBytes: 512 }).tools!) expect(tool.replay).toBe('safe');

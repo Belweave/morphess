@@ -1,0 +1,20 @@
+  morphess                      DEMO · offline-demo  BUILD
+  Unofficial · independent · not Morph-backed
+────────────────────────────────────────────────────────────
+  offline scripted provider.
+
+  [~] ask_user  running
+
+                                                           ▄
+────────────────────────────────────────────────────────────
+
+  Answer needed · What should this demo focus on?
+  1 Review the workspace   2 Explain durable recovery  ·
+  or type your answer
+
+ ┌────────────────────────────────────────────────────────┐
+ │ ANSWER · Ctrl+R full question  ·  workspace-write      │
+ │ Your answer…                                           │
+ └────────────────────────────────────────────────────────┘
+Awaiting answer  ·  ~0/1m ctx  ·  37 out  ·  $0.0000
+Enter send · C-p commands · C-q quit

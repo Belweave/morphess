@@ -4,6 +4,7 @@ import {
 } from '@earendil-works/pi-ai';
 import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completions.lazy';
 import { openAIResponsesApi } from '@earendil-works/pi-ai/api/openai-responses.lazy';
+import { raceWithAbortSignal } from '@earendil-works/pi-ai/utils/abort';
 import type { MorphessConfig } from '../config.js';
 
 export const MORPHESS_PROVIDER = 'morphess';
@@ -28,6 +29,8 @@ function validateInput(context: TranscriptContext, model: Model<Api>): void {
 function boundedAdapter(adapter: ProviderStreams, config: MorphessConfig['model']): ProviderStreams {
   const dispatch = (simple: boolean, model: Model<Api>, context: TranscriptContext, options: StreamOptions = {}) => lazyStream(model, async () => {
     validateInput(context, model);
+    if (options.maxTokens !== undefined && (!Number.isSafeInteger(options.maxTokens) || options.maxTokens <= 0)) throw new Error('maxTokens must be a positive safe integer');
+    if (options.timeoutMs !== undefined && (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs <= 0)) throw new Error('timeoutMs must be a positive safe integer');
     const controller = new AbortController();
     const abort = () => controller.abort(options.signal?.reason ?? new Error('Model request aborted'));
     options.signal?.addEventListener('abort', abort, { once: true });
@@ -68,15 +71,11 @@ function boundedAdapter(adapter: ProviderStreams, config: MorphessConfig['model'
     return (async function* () {
       const iterator = source[Symbol.asyncIterator]();
       let partial: AssistantMessage | undefined;
-      let onAbort: (() => void) | undefined;
-      const aborted = new Promise<never>((_, reject) => {
-        onAbort = () => reject(controller.signal.reason);
-        controller.signal.addEventListener('abort', onAbort, { once: true });
-        if (controller.signal.aborted) onAbort();
-      });
       try {
         while (true) {
-          const next = await Promise.race([iterator.next(), aborted]);
+          // A shared unresolved abort Promise retains a reaction for every stream
+          // event. Pi's helper removes its listener after each wait instead.
+          const next = await raceWithAbortSignal(iterator.next(), controller.signal);
           if (next.done) break;
           refreshIdle();
           if ('partial' in next.value) partial = next.value.partial;
@@ -95,7 +94,6 @@ function boundedAdapter(adapter: ProviderStreams, config: MorphessConfig['model'
       } finally {
         clearTimeout(hard);
         clearTimeout(idle);
-        if (onAbort) controller.signal.removeEventListener('abort', onAbort);
         options.signal?.removeEventListener('abort', abort);
       }
     })();

@@ -12,7 +12,7 @@ const Slots = defineDoc<{ tasks: TaskId[] }>({
 });
 
 // Positive allowlist: unknown plugin tools, shell, code mode and MCP never become read-only by assertion.
-const READ_ONLY_TOOLS = new Set(['read', 'ls', 'find', 'grep', 'search', 'glob', 'list_files', 'read_instructions', 'load_skill', 'git_status', 'git_diff']);
+const READ_ONLY_TOOLS = new Set(['read', 'read_bytes', 'ls', 'find', 'grep', 'search', 'glob', 'list_files', 'read_instructions', 'load_skill', 'git_status', 'git_diff']);
 
 /**
  * Foreground children are Pi conversations owned by their invoking durable tool task.
@@ -64,7 +64,9 @@ export function createDelegationExtension(options: {
           if (existing !== undefined) return existing.id;
           const child = await tx.createConversation({ ownership: { kind: 'task', taskId: api.taskId } });
           await configure(tx, child.id, {
-            extensions: { remove: [extension] },
+            // Preserve the parent's exact selection. A remove-only change would replace
+            // an inherited filter and accidentally activate globally installed hooks/tools.
+            extensions: parent.extensions.filter(selected => selected.name !== extension.name),
             tools,
             instructions: [parent.instructions ?? '', `You are a ${role} child agent. Complete the assigned task and report evidence and limitations. You may not delegate further.`,
               role === 'coder' ? 'Coordinate file ownership with the parent.' : 'Read-only role: do not modify files or execute commands.'].join('\n'),

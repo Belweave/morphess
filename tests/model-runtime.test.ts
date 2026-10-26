@@ -147,4 +147,12 @@ describe('custom OpenAI-compatible streaming through real Pi adapters', () => {
     setTimeout(() => controller.abort(new Error('User cancelled request')), 40);
     expect((await result).stopReason).toBe('aborted');
   });
+
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, 0, -1, 1.5])('rejects invalid output ceilings (%s) without dispatch', async maxTokens => {
+    const { config, requests } = await fixture(() => { throw new Error('Must not reach HTTP'); });
+    const { models, model } = createModelRuntime(config, { MORPHESS_API_KEY: 'fixture-key' });
+    const result = await models.completeSimple(models.getModel(model.provider, model.modelId)!, context, { maxTokens });
+    expect(result.errorMessage).toContain('maxTokens must be a positive safe integer');
+    expect(requests).toHaveLength(0);
+  });
 });
