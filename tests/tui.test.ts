@@ -178,6 +178,29 @@ describe.skipIf(!supported)('native OpenTUI view (Node 26.4+ with --experimental
     expect(client.setMode).toHaveBeenLastCalledWith('plan');
   });
 
+  it('requires an explicit permission selection before requesting a trusted restart', async () => {
+    const onRestartTrusted = vi.fn();
+    const { app, setup, client } = await openView(120, 36, initialState(), { onRestartTrusted });
+    expect(setup.captureCharFrame()).toContain('shell off');
+    app.composer.setText('/permissions'); setup.mockInput.pressEnter(); await settle(setup);
+    expect(setup.captureCharFrame()).toContain('Enable full access and restart');
+    expect(setup.captureCharFrame().replace(/[│\s]+/g, ' ')).toContain('outside this workspace');
+    expect(onRestartTrusted).not.toHaveBeenCalled();
+    setup.mockInput.pressEscape(); await settle(setup); expect(onRestartTrusted).not.toHaveBeenCalled();
+    app.composer.setText('/permissions'); setup.mockInput.pressEnter(); await settle(setup);
+    setup.mockInput.pressEnter(); await settle(setup);
+    expect(onRestartTrusted).toHaveBeenCalledTimes(1); expect(client.send).not.toHaveBeenCalled();
+  });
+
+  it('shows retained error details and tool arguments through /errors', async () => {
+    const { app, setup } = await openView(120, 36, initialState({ entries: [{ id: 'failed', role: 'tool', toolName: 'bash', status: 'error', text: 'Host shell blocked', detail: 'Host shell blocked by policy', args: '{"command":"inspect"}', revision: 1 }] }));
+    app.composer.setText('/errors'); setup.mockInput.pressEnter(); await settle(setup);
+    expect(setup.captureCharFrame()).toContain('Session errors');
+    setup.mockInput.pressEnter(); await settle(setup);
+    const frame = setup.captureCharFrame();
+    expect(frame).toContain('Host shell blocked by policy'); expect(frame).toContain('Arguments:'); expect(frame).toContain('inspect');
+  });
+
   it('loads, searches, reviews and selects a provider model without sending a task', async () => {
     const { app, setup, client } = await openView();
     app.composer.setText('/model'); setup.mockInput.pressEnter(); await settle(setup);

@@ -42,6 +42,8 @@ The configured state directory and `.morphess` are protected. Temporary tool out
 
 Plan mode further narrows agent tools without changing host policy. Stop active work before entering plan mode. Code mode restores prior known tool names and does not grant additional shell authority.
 
+Use `--full-access` (equivalent to `--trusted`) to enable unrestricted host shell for direct and code mode tool calls. The TUI's `/permissions` offers an explicit host restart with that grant. Restricted hosts remove blocked operations from native tool exposure while retaining environment enforcement. `/errors` shows retained failures; `export` emits persisted history without resuming work.
+
 ## Persistence and recovery
 
 SQLite is stored at `<stateDir>/session.sqlite`; directory/file modes are 0700/0600. Treat session databases, image artifacts, and `ui.json` as sensitive because they contain user input and tool results.

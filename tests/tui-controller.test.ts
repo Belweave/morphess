@@ -39,6 +39,21 @@ async function setup(options: { extensions?: Extension[] } = {}) {
 }
 
 describe('bounded TUI event projection', () => {
+  it('renders nested returned values and policy diagnostics rather than blank successful rows', () => {
+    const projection = new TuiProjection();
+    projection.apply([{ type: 'tool_execution_start', toolCallId: 'code/read', toolName: 'read', args: { path: 'source.ts' } },
+      { type: 'tool_execution_end', toolCallId: 'code/read', toolName: 'read', result: { taskId: 42 as never, structuredOutput: 'export const value = 1;', isError: false, diagnostics: [] } }]);
+    expect(projection.entries[0]).toMatchObject({ status: 'done', text: 'export const value = 1;', args: '{"path":"source.ts"}' });
+    projection.apply([{ type: 'tool_execution_end', toolCallId: 'code/bash', toolName: 'bash', result: { taskId: 43 as never, isError: true, diagnostics: [{ severity: 'error', message: 'Host shell is blocked' }] } }]);
+    expect(projection.entries[1]).toMatchObject({ status: 'error', text: 'error: Host shell is blocked' });
+    expect(projection.entries[1]?.detail).toContain('Host shell is blocked');
+  });
+
+  it('shows retained nested failure summaries after reopening a snapshot', () => {
+    const projection = new TuiProjection();
+    projection.snapshot({ ...snapshot(), nestedTools: [{ callId: 'code/bash', parentCallId: 'code', parentTaskId: 1 as never, taskId: 2 as never, name: 'bash', status: 'done', arguments: { command: 'inspect' }, summary: { isError: true, error: 'Shell denied' } }] });
+    expect(projection.entries[0]).toMatchObject({ status: 'error', text: 'Shell denied', args: '{"command":"inspect"}' });
+  });
   it('caps rows and text, strips terminal controls, and preserves unchanged row identity across snapshots', () => {
     const projection = new TuiProjection();
     const entries = Array.from({ length: 100 }, (_, index) => entry(index + 1, { role: 'user', content: `${index}:` + 'x'.repeat(50_000), timestamp: index }));

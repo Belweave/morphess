@@ -30,6 +30,7 @@ import { createPersona } from './prompt.js';
 import { ModelProfilesDoc, WorkspaceDoc } from './state.js';
 import { parseRecordId } from './ids.js';
 import { createConcurrencyExtension } from './concurrency.js';
+import { createHostToolPolicy } from './tool-policy.js';
 import { createQuestionsExtension, createNonInteractiveQuestionsExtension } from '../interaction/index.js';
 
 export interface RuntimeOptions {
@@ -113,6 +114,7 @@ export class MorphessRuntime {
       registry.install(createNonInteractiveQuestionsExtension({ enabled: options.nonInteractive === true }));
       registry.install(createDelegationExtension(config.limits));
       registry.install(createToolSearchExtension());
+      registry.install(createHostToolPolicy(config.policy.mode));
       if (config.codemode) {
         const sandbox = new CodemodeSandbox({ memoryLimitBytes: 128 * 1024 * 1024 });
         cleanups.push(async () => { await sandbox.close(); });

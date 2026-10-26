@@ -22,13 +22,13 @@ import { sanitizeText, summarizeUsage } from './tui/state.js';
 
 export function createCli() {
   const program = new Command().name('morphess').description('Coding agent CLI and terminal workspace')
-    .version(VERSION).option('-c, --config <file>', 'configuration file').option('-C, --workspace <directory>', 'workspace directory').option('--trusted', 'allow unrestricted host shell execution')
+    .version(VERSION).option('-c, --config <file>', 'configuration file').option('-C, --workspace <directory>', 'workspace directory').option('--trusted', 'allow unrestricted host shell execution').option('--full-access', 'enable trusted host shell access for all tools, including code mode')
     .addHelpText('after', '\nMorphess is an independent, unofficial harness for Morph inference.\nIt is not developed, endorsed, sponsored, or backed by Morph.\n');
 
   async function config() {
-    const options = program.opts<{ config?: string; workspace?: string; trusted?: boolean }>();
+    const options = program.opts<{ config?: string; workspace?: string; trusted?: boolean; fullAccess?: boolean }>();
     const loaded = await loadConfig({ cwd: options.workspace, path: options.config });
-    if (options.trusted) loaded.policy.mode = 'trusted';
+    if (options.trusted || options.fullAccess) loaded.policy.mode = 'trusted';
     return loaded;
   }
 
@@ -49,7 +49,12 @@ export function createCli() {
       const { bootstrapTerminal } = await import('./tui/bootstrap.js');
       if (await bootstrapTerminal()) return;
       const { launchTui } = await import('./tui/app.js');
-      await usingRuntime(runtime => launchTui(runtime, { sessionId: options.session, menu }), true);
+      let session = options.session;
+      for (;;) {
+        const result = await usingRuntime(runtime => launchTui(runtime, { sessionId: session, menu }), true);
+        if (!result.restartTrusted) break;
+        program.setOptionValue('trusted', true); session = String(result.sessionId); menu = false;
+      }
   }
   program.command('tui', { isDefault: true }).description('Open terminal workspace (default command)')
     .option('-s, --session <id>', 'existing conversation', 'root')

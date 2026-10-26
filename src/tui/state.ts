@@ -12,6 +12,7 @@ export interface TuiEntry {
   toolName?: string;
   status: 'running' | 'done' | 'error';
   detail?: string;
+  args?: string;
   revision: number;
 }
 
@@ -117,14 +118,16 @@ export class TuiProjection {
   #blocks = new Map<number, { kind: 'text' | 'thinking'; text: string }>();
   #baseline: Map<string, TuiEntry> | undefined;
   #toolOutput = new Map<string, string>();
+  #toolArgs = new Map<string, string>();
   #runActive = false;
   #compactions = new Set<number>();
 
   #row(id: string, patch: Omit<TuiEntry, 'id' | 'revision'>): void {
     const current = this.entries.find(row => row.id === id);
     const previous = current ?? this.#baseline?.get(id);
+    if (patch.role === 'tool') patch = { ...patch, args: this.#toolArgs.get(id) ?? previous?.args };
     const equal = previous && Object.keys(patch).every(key => previous[key as keyof TuiEntry] === patch[key as keyof typeof patch])
-      && ['entryId', 'thinking', 'toolName', 'detail'].every(key => patch[key as keyof typeof patch] === previous[key as keyof TuiEntry]);
+      && ['entryId', 'thinking', 'toolName', 'detail', 'args'].every(key => patch[key as keyof typeof patch] === previous[key as keyof TuiEntry]);
     if (current && equal) return;
     const row = equal ? previous : { id, ...patch, revision: (previous?.revision ?? 0) + 1 };
     this.entries = current ? this.entries.map(item => item.id === id ? row : item) : [...this.entries, row].slice(-PREVIEW_LIMITS.entries);
@@ -132,6 +135,11 @@ export class TuiProjection {
       const retained = new Set(this.entries.map(entry => entry.id));
       for (const key of this.#toolOutput.keys()) if (!retained.has(key)) this.#toolOutput.delete(key);
     }
+  }
+
+  #rememberArgs(callId: string, args: unknown): void {
+    this.#toolArgs.set(`tool:${callId}`, previewDetail(args));
+    while (this.#toolArgs.size > PREVIEW_LIMITS.entries) this.#toolArgs.delete(this.#toolArgs.keys().next().value!);
   }
 
   #entry(entry: EntryRecord): void {
@@ -145,6 +153,7 @@ export class TuiProjection {
         });
         this.#toolOutput.delete(`tool:${message.toolCallId}`);
       } else if (message.role === 'assistant') {
+        for (const block of message.content) if (block.type === 'toolCall') this.#rememberArgs(block.id, block.arguments);
         const known = this.entries.find(row => row.entryId === entry.id && row.role === 'assistant')
           ?? [...this.#baseline?.values() ?? []].find(row => row.entryId === entry.id && row.role === 'assistant');
         const id = known?.id ?? this.#streamId ?? `entry:${entry.id}`;
@@ -193,6 +202,7 @@ export class TuiProjection {
     this.#baseline = new Map(this.entries.map(entry => [entry.id, entry]));
     this.entries = []; this.#streamId = undefined; this.#blocks.clear();
     this.#toolOutput.clear();
+    this.#toolArgs.clear();
     for (const entry of event.entries.slice(-PREVIEW_LIMITS.entries)) this.#entry(entry);
     this.#runActive = event.run !== undefined;
     this.#compactions = new Set(event.compactions.map(compaction => compaction.taskId));
@@ -203,9 +213,11 @@ export class TuiProjection {
     if (event.generation?.message) { this.#streamId = streamId; this.#start(event.generation.message); }
     for (const slot of [...event.tools.slice(-PREVIEW_LIMITS.entries), ...event.nestedTools.slice(-PREVIEW_LIMITS.entries)].slice(-PREVIEW_LIMITS.entries)) {
       if (slot.status === 'done' && this.entries.some(row => row.id === `tool:${slot.callId}`)) continue;
+      if ('arguments' in slot) this.#rememberArgs(slot.callId, slot.arguments);
+      const output = slot.output || ('summary' in slot ? slot.summary?.error : undefined) || (slot.status === 'done' ? 'No retained output; inspect the parent tool result.' : '');
       this.#toolOutput.set(`tool:${slot.callId}`, (slot.output ?? '').slice(0, PREVIEW_LIMITS.detail));
-      this.#row(`tool:${slot.callId}`, { role: 'tool', toolName: sanitizeText(slot.name, 200), text: sanitizeText(slot.output ?? ''),
-        detail: slot.details === undefined ? undefined : previewDetail(slot.details), status: slot.status !== 'done' ? 'running'
+      this.#row(`tool:${slot.callId}`, { role: 'tool', toolName: sanitizeText(slot.name, 200), text: sanitizeText(output),
+        detail: slot.details === undefined ? sanitizeText(output, PREVIEW_LIMITS.detail) : previewDetail(slot.details), status: slot.status !== 'done' ? 'running'
           : 'summary' in slot ? slot.summary?.isError ? 'error' : 'done' : 'entry' in slot && slot.entry !== undefined ? 'done' : 'error' });
     }
     this.#baseline = undefined;
@@ -235,6 +247,7 @@ export class TuiProjection {
           this.#renderStream(); break;
         case 'message_end': case 'entry_appended': this.#entry(event.entry); break;
         case 'tool_execution_start':
+          this.#rememberArgs(event.toolCallId, event.args);
           this.#row(`tool:${event.toolCallId}`, { role: 'tool', toolName: sanitizeText(event.toolName, 200), text: '', detail: previewDetail(event.args), status: 'running' }); break;
         case 'tool_execution_update': {
           const id = `tool:${event.toolCallId}`;
@@ -249,7 +262,14 @@ export class TuiProjection {
         case 'tool_execution_end': {
           if (event.entry) { this.#entry(event.entry); break; }
           const id = `tool:${event.toolCallId}`; const previous = this.entries.find(row => row.id === id);
-          this.#row(id, { role: 'tool', toolName: sanitizeText(event.toolName, 200), text: previous?.text ?? '', detail: previous?.detail,
+          const result = event.result;
+          const value = result?.structuredOutput;
+          const diagnostics = result?.diagnostics.map(item => `${item.severity}: ${item.message}`).join('\n') ?? '';
+          const rendered = value === undefined ? previous?.text || diagnostics || (result ? 'Completed without output.' : 'Tool did not return a result.')
+            : typeof value === 'string' ? sanitizeText(value, PREVIEW_LIMITS.detail) : previewDetail(value);
+          const output = rendered || diagnostics || 'Completed without text output.';
+          const detail = sanitizeText(`${output}${result?.details === undefined ? '' : `\n\nDetails:\n${previewDetail(result.details)}`}${diagnostics ? `\n\nDiagnostics:\n${diagnostics}` : ''}`, PREVIEW_LIMITS.detail);
+          this.#row(id, { role: 'tool', toolName: sanitizeText(event.toolName, 200), text: sanitizeText(output), detail,
             status: event.result?.isError || !event.result ? 'error' : 'done' }); break;
         }
         case 'usage_changed': this.usage = summarizeUsage(event.usage); break;

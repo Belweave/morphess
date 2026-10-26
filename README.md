@@ -12,7 +12,7 @@ The terminal requires Node 26.4+ on macOS or Linux. Headless commands and librar
 npm ci --ignore-scripts
 npm run check
 npm pack
-npm install --global ./belweave-morphess-0.2.3.tgz --omit=dev --ignore-scripts
+npm install --global ./belweave-morphess-0.2.4.tgz --omit=dev --ignore-scripts
 export PATH="$(npm prefix --global)/bin:$PATH"
 morphess --version
 morphess --help
@@ -53,6 +53,8 @@ morphess
 ```
 
 `doctor` checks configuration and credential presence; it does not send an inference request. The default configuration enables code mode and permits workspace file edits while denying arbitrary shell execution.
+
+For full host shell access, including `tools.bash(...)` from code mode, launch `morphess --full-access` (`--trusted` is equivalent). In an open TUI, `/permissions` reviews the grant and can restart the host with access enabled. `/errors` shows retained session failures. Plan mode remains read-only; use `/code` or Shift+Tab for the coding workflow.
 
 ## Commands
 

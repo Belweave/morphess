@@ -26,3 +26,9 @@ it('does not start the CLI when its module is imported', async () => {
   const { stdout } = await execute(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', `await import(${JSON.stringify(pathToFileURL(resolve('src/cli.ts')).href)}); console.log('imported');`]);
   expect(stdout.trim()).toBe('imported');
 });
+
+it('enables native model and nested shell calls with the full-access CLI flag', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'morphess-access-')); directories.push(directory);
+  const { stdout } = await execute(process.execPath, ['--import', 'tsx', resolve('src/cli.ts'), '-C', directory, '--full-access', 'tools', 'bash', '--json']);
+  expect(JSON.parse(stdout)).toMatchObject({ policy: 'trusted', tools: [{ name: 'bash', offeredToModel: true, callableByTools: true, status: 'available' }] });
+});

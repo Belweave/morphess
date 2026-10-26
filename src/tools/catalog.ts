@@ -85,7 +85,7 @@ export function createToolCatalog(snapshot: RegistrySnapshot, agent: Agent, stat
     else if (offeredToModel) status = 'available';
     else if (callableByTools) { status = 'nested-only'; reason = 'Callable by other tools, but not currently offered to the model.'; }
     else { status = 'not-offered'; reason = 'Pi did not expose this tool to model or nested calls; model selection, callers, or a failed wrapper may exclude it.'; }
-    if (enabled && (offeredToModel || callableByTools || deferredPending) && provider.source === 'coding-tools' && origin(provider.source) === 'builtin') {
+    if (enabled && provider.source === 'coding-tools' && origin(provider.source) === 'builtin') {
       if (name === 'bash' && context.policy !== 'trusted') {
         status = 'policy-blocked'; reason = 'Host shell execution requires explicit trusted mode or an isolated execution backend.';
       } else if ((name === 'write' || name === 'edit') && context.policy === 'read-only') {

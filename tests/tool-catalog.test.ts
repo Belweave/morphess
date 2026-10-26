@@ -29,7 +29,7 @@ function probe(name: string, extra: Partial<ReturnType<typeof defineTool>> = {})
 }
 
 describe('native tool catalog', () => {
-  it.each([[false, 16], [true, 17]] as const)('lists the real built-in inventory with code mode %s', async (codemode, count) => {
+  it.each([[false, 15], [true, 16]] as const)('lists the offered built-in inventory with code mode %s', async (codemode, count) => {
     const { runtime, faux } = await openFixture({ codemode });
     const catalog = await runtime.toolCatalog();
     expect(catalog.tools).toHaveLength(count);
@@ -37,8 +37,10 @@ describe('native tool catalog', () => {
     expect(new Set(catalog.tools.map(tool => tool.name)).size).toBe(count);
     expect(catalog.tools.every(tool => tool.offeredToModel && tool.selected && tool.enabled)).toBe(true);
     expect(catalog.tools.find(tool => tool.name === 'read')).toMatchObject({ source: 'coding-tools', origin: 'builtin' });
-    expect(catalog.tools.find(tool => tool.name === 'bash')).toMatchObject({ status: 'policy-blocked', replay: 'unsafe', offeredToModel: true });
-    expect(catalog.tools.find(tool => tool.name === 'bash')?.reason).toContain('trusted');
+    expect(catalog.tools.find(tool => tool.name === 'bash')).toBeUndefined();
+    const blocked = (await runtime.toolCatalog({ name: 'bash' })).tools[0];
+    expect(blocked).toMatchObject({ status: 'policy-blocked', replay: 'unsafe', offeredToModel: false, callableByTools: false });
+    expect(blocked?.reason).toContain('trusted');
     expect(catalog.tools.every(tool => tool.parameters === undefined)).toBe(true);
     expect(catalog.scheduling).toBe('paused');
     expect(faux.state.callCount).toBe(0);

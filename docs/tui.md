@@ -60,6 +60,16 @@ The `codemode` tool is a JavaScript sandbox for calling enabled tools through `t
 
 Mode and restoration data are committed together with the native tool filter. Restrictions persist when the same session is reopened from another interface.
 
+## Host permissions and errors
+
+`morphess --full-access` (or `--trusted`) enables host shell execution for both direct agent calls and code mode's `tools.bash`. Shell commands run with the host user's OS permissions, including network and access outside the workspace. This flag applies to the running host and does not change saved configuration. Persistent permission can be configured explicitly with `policy.mode: "trusted"`.
+
+In the TUI, `/permissions` or **Ctrl+P → Shell permissions** displays the current grant. From workspace-write mode, **Enable full access and restart** closes the current host and reopens the same session with trusted shell after explicit selection. Stop active work first. Code/Plan is a separate workflow selector; changing it does not grant host permissions. The composer displays `shell on` or `shell off` in Code mode.
+
+Blocked shell and read-only mutations are omitted from both native model-facing tools and the nested code mode namespace. The execution environment still enforces policy if a stale or unoffered call is attempted. `morphess tools --all` retains these tools in the inventory with their blocked status.
+
+`/errors` or **Ctrl+P → Session errors** lists failures and interrupted responses in the retained conversation window. Ctrl+T opens full retained tool arguments and output. Nested code mode results and error diagnostics appear as output; reopened slots without retained values say to inspect the parent result. For complete persisted model history, use `morphess export <session>`. Inspecting history does not resume completed effects. No provider error is implied by an explicitly aborted response.
+
 ## Display and storage limits
 
 The terminal projects the most recent 80 entries, up to 24,000 characters per message and 64,000 per tool detail. It removes terminal control sequences from displayed content while preserving original source in Pi's transcript. Export full history with `morphess export <session>` or use the paginated API.

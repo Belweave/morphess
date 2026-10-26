@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.4 — 2026-10-26
+
+- Added `--full-access` as an explicit trusted host-shell flag, including code mode calls, plus a reviewed TUI permission restart that preserves the selected session.
+- Removed policy-blocked operations from native model and nested tool exposure while retaining execution-environment enforcement.
+- Rendered nested tool values and error diagnostics, preserved retained arguments for inspection, and added the `/errors` menu.
+- Displayed shell availability in the Code composer and documented host permissions separately from Code/Plan workflows.
+
 ## 0.2.3 — 2026-10-26
 
 - Added authenticated `/models` discovery, a searchable TUI model picker, manual IDs, refresh/cancellation, profile review, and the `models` CLI command.
