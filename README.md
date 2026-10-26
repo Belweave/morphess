@@ -1,14 +1,41 @@
-# Morphess
+<div align="center">
 
-Morphess runs durable coding tasks against a configured OpenAI-compatible inference endpoint. It uses Pi Durable for conversations, tool execution, SQLite recovery, and task ownership, with a terminal UI, CLI, and HTTP API.
+<h1>Morphess</h1>
 
-**Morphess is an independent, unofficial harness for Morph inference. It is not developed, endorsed, sponsored, or backed by Morph.**
+<p><strong>A durable coding agent for your terminal.</strong><br>
+Code mode, MCP, and persistent sessions for Morph inference and OpenAI-compatible models.</p>
+
+<p>
+  <a href="https://github.com/Belweave/morphess/blob/main/package.json"><img src="https://img.shields.io/github/package-json/v/Belweave/morphess?color=80ee64&amp;label=version" alt="Version"></a>
+  <a href="https://github.com/Belweave/morphess/actions/workflows/check.yml"><img src="https://github.com/Belweave/morphess/actions/workflows/check.yml/badge.svg" alt="Checks"></a>
+  <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/TUI-Node.js%2026.4%2B-80ee64" alt="TUI requires Node.js 26.4 or newer"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-80ee64" alt="MIT license"></a>
+</p>
+
+<p>
+  <a href="#install-from-this-checkout">Install</a> &nbsp;·&nbsp;
+  <a href="#configure">Configure</a> &nbsp;·&nbsp;
+  <a href="#commands">Commands</a> &nbsp;·&nbsp;
+  <a href="#documentation">Documentation</a>
+</p>
+
+<p><img src="assets/screenshots/tui-default.png" width="1120" alt="Morphess on first launch: green Morph ASCII mark, an empty Code session, the task composer, context status, and keyboard shortcuts."></p>
+
+<p><sub>Independent and unofficial. Morphess is not developed, endorsed, sponsored, or backed by Morph.</sub></p>
+
+</div>
+
+Built on [Pi Durable](https://github.com/earendil-works/pi), Morphess keeps conversations, tool execution, SQLite recovery, and task ownership in one runtime. Use the focused terminal workspace, run tasks from the CLI, or connect through the HTTP API. Model and context limits are configurable, including text and image input with a 1M-token context window when supported by your provider.
+
+The default view keeps the conversation and composer in focus. **Ctrl+P** opens commands, **Shift+Tab** switches Code and Plan, **/model** loads the provider's model catalog, and **Ctrl+B** toggles the session sidebar.
 
 ## Install from this checkout
 
 The terminal requires Node 26.4+ on macOS or Linux. Headless commands and library use require Node 22.19+.
 
 ```sh
+git clone https://github.com/Belweave/morphess.git
+cd morphess
 npm ci --ignore-scripts
 npm run check
 npm pack
@@ -97,6 +124,8 @@ Run `morphess tools --all --json` for the installed catalog and `morphess tools 
 
 One host process owns each `stateDir`. Closing the terminal preserves accepted work; aborting cancels the selected task subtree. Session storage contains prompts, source, attachments, and tool results and must be treated as sensitive.
 
+## Documentation
+
 - [Provider configuration and credentials](docs/providers.md)
 - [Terminal controls](docs/tui.md)
 - [Configuration, permissions, recovery, and limits](docs/operations.md)
@@ -107,4 +136,6 @@ One host process owns each `stateDir`. Closing the terminal preserves accepted w
 - [Runtime architecture](docs/architecture.md)
 - [Verification commands](docs/validation.md)
 
-Morphess code is proprietary. Dependency notices are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+## License
+
+[MIT](LICENSE). Dependency notices and Morph trademark attribution are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

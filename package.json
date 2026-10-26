@@ -4,7 +4,7 @@
   "private": true,
   "description": "An independent durable coding harness for Morph inference and OpenAI-compatible models",
   "type": "module",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "engines": {
     "node": ">=22.19.0"
   },
@@ -36,6 +36,7 @@
     "start": "node dist/cli.js",
     "eval": "npm run build && tsx scripts/eval.ts",
     "brand": "tsx scripts/brand.ts",
+    "screenshot:tui": "node --experimental-ffi --import tsx scripts/capture-tui.ts",
     "tui": "npm run build && node dist/cli.js tui",
     "benchmark:stream": "node --expose-gc --import tsx scripts/benchmark-stream.ts",
     "prepack": "npm run build"
