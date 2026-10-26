@@ -1,6 +1,6 @@
 {
   "name": "@belweave/morphess",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "private": true,
   "description": "An independent durable coding harness for Morph inference and OpenAI-compatible models",
   "type": "module",

@@ -12,6 +12,7 @@ The workspace contains a transcript, multiline composer, and status controls. Th
 | --- | --- |
 | Enter | Send input or answer the current question |
 | Shift+Enter / Alt+Enter | Insert a newline, subject to terminal support |
+| Shift+Tab | Cycle Code and Plan modes |
 | Ctrl+P | Open the command menu |
 | Ctrl+O / Ctrl+N | Switch / create a session |
 | Ctrl+B | Toggle the context/plan inspector |
@@ -37,11 +38,25 @@ Pending `ask_user` questions survive close/reopen. Questions from active delegat
 
 File selection inserts an `@path` reference; file tools retrieve its contents. Image attachments are validated and loaded when input is submitted. A failed submission retains the draft.
 
-## Plan and build mode
+## Models
+
+Use `/model` or **Ctrl+P → Choose model**. Morphess authenticates `GET <baseUrl>/models` with the configured provider key. The searchable list is cached in memory for 60 seconds; **Refresh model list** bypasses it. Escape cancels loading. Discovery failures offer retry, manual model ID entry, and provider settings.
+
+Morph's ID-only authenticated roster is enriched from its official public metadata endpoint at `https://www.morphllm.com/api/models/json`. That request receives no API key and cannot add models absent from the account roster. If enrichment is unavailable, the picker retains the roster and labels missing capabilities.
+
+Select a model, review its profile, and choose **Use in this session**. Explicit provider limits and text/image modalities are used when reported; missing fields inherit your configured profile and are labelled during review. Output remains capped by your configured ceiling. Prices from another model are never copied. Hosts with a spend limit require explicit prices before switching to another model.
+
+The session's model and selected profiles persist in Pi's state and restore before scheduling resumes. Stop active work before switching; a smaller context or incompatible image history can require compaction or a new session. New submissions use the selected model. `/model <id>` supports manual IDs; `morphess models --json` lists models from the CLI. `morphess configure --model <id>` changes the launch default. Endpoint and protocol changes require a host restart.
+
+## Code and Plan modes
+
+Use **Shift+Tab**, `/mode`, or **Ctrl+P → Change mode**. The header and composer show the current mode. Code is the default editing workflow; it was previously labelled Build.
 
 `/plan` restricts tools to reads, search, guarded Git inspection, guidance, human questions, working notes/plans, and restricted delegation. Stop active work before entering plan mode. Shell, file mutation, code mode, and deferred-tool loading are excluded.
 
-`/build` restores the previous enabled tool names that still exist in selected extensions. It preserves model-facing tool filters. A delegated child inherits the parent's restricted tools and cannot enable missing tools. Workspace policy continues to apply in both modes; switching to build does not grant shell access.
+`/code` restores the previous enabled tool names that still exist in selected extensions; `/build` remains an alias. It preserves model-facing tool filters. A delegated child inherits the parent's restricted tools and cannot enable missing tools. Workspace policy continues to apply in both modes; switching to Code does not grant shell access.
+
+The `codemode` tool is a JavaScript sandbox for calling enabled tools through `tools.*`. It is installed by default, available in Code, and excluded by Plan's read-only selection. It is a tool, separate from the workflow selector. `/codemode` explains its status and `/catalog` shows its parameters.
 
 Mode and restoration data are committed together with the native tool filter. Restrictions persist when the same session is reopened from another interface.
 

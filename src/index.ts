@@ -1,6 +1,7 @@
 export { defaultConfig, loadConfig, morphessConfigSchema, mcpServerSchema, type MorphessConfig, type McpServerConfig } from './config.js';
 export { MorphessRuntime, openRuntime, type RuntimeOptions } from './runtime/runtime.js';
 export { createModelRuntime } from './models/runtime.js';
+export { discoverModels, parseModelList, type ModelChoice } from './models/catalog.js';
 export { createContextSettings, estimateContextBudget, type ContextBudget } from './context/budget.js';
 export { createWorkspaceEnvironment, type WorkspaceExecutionEnv } from './policy/workspace.js';
 export { createWorkspaceTools } from './tools/workspace.js';

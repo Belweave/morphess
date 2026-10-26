@@ -10,6 +10,8 @@ morphess auth login
 morphess auth status
 ```
 
+Use `morphess models` to fetch the configured provider's authenticated `/models` roster. In the TUI, `/model` opens a searchable picker and `/model <id>` reviews a manual ID. Selection applies to the current durable session and persists across restarts. The launch default remains in `morphess.json`; change it with `morphess configure --model <id>`. [Model selection and profile limits](tui.md#models) explains metadata inheritance and switching constraints.
+
 Login accepts a key only through masked terminal input. Bracketed paste is supported; press Enter after pasting. Ctrl-C cancels and restores the terminal. Keys are never accepted as command arguments or saved in `morphess.json`. For unattended use, supply the environment variable named by `model.apiKeyEnv`. That variable takes priority over the saved key.
 
 Change providers whenever needed:

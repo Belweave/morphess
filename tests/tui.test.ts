@@ -4,6 +4,7 @@ import type { MorphessTui as TuiClass, TuiOptions } from '../src/tui/app.js';
 import type { TuiSnapshot } from '../src/tui/state.js';
 import { defaultPreferences } from '../src/tui/preferences.js';
 import { THEMES } from '../src/tui/theme.js';
+import type { ModelChoice } from '../src/models/catalog.js';
 
 const [major = 0, minor = 0] = process.versions.node.split('.').map(Number);
 let ffiEnabled = false;
@@ -17,7 +18,7 @@ const active: Array<{ app: TuiClass; setup: TestRendererSetup }> = [];
 
 function initialState(overrides: Partial<TuiSnapshot> = {}): TuiSnapshot {
   return {
-    sessionId: 17, workspace: '/work/morphess', model: 'local/special-1m', policy: 'workspace-write', mode: 'build',
+    sessionId: 17, workspace: '/work/morphess', model: 'local/special-1m', policy: 'workspace-write', mode: 'build', codemode: true,
     busy: false, entries: [], questions: [], plan: [], usage: { input: 1200, output: 42, cacheRead: 100, cost: 0.0123 }, status: 'Ready', version: 1,
     ...overrides,
   };
@@ -41,6 +42,11 @@ function mockClient(initial = initialState()) {
     diff: vi.fn(async () => '+ added line'), files: vi.fn(async (_query: string) => ['src/app.ts', 'README.md']),
     tools: vi.fn(async () => ({ sessionId: state.sessionId, policy: 'workspace-write' as const, scheduling: 'paused' as const, availabilityBasis: 'native-selection-and-known-host-policy' as const, tools: [], extensions: [] })),
     provider: vi.fn(async () => ({ baseUrl: 'https://api.morphllm.com/v1', model: 'model', api: 'chat-completions' as const, apiKeyEnv: 'MORPH_API_KEY', authenticated: false, source: 'none' as const })),
+    models: vi.fn(async (_refresh = false, _signal?: AbortSignal): Promise<ModelChoice[]> => [
+      { id: 'fast-vision', name: 'Fast vision', contextWindow: 262144, input: ['text', 'image'], source: 'provider' },
+      { id: 'private-model', name: 'Private model', source: 'provider' },
+    ]),
+    setModel: vi.fn(async (model: ModelChoice) => { emit({ model: model.id }); }),
   } satisfies Client;
   return { client, emit, listeners };
 }
@@ -152,6 +158,55 @@ describe.skipIf(!supported)('native OpenTUI view (Node 26.4+ with --experimental
     expect(client.newSession).not.toHaveBeenCalled();
     expect(client.send).not.toHaveBeenCalled();
     expect(setup.captureCharFrame()).toContain('Endpoint: https://api.morphllm.com/v1');
+  });
+
+  it('cycles Code and Plan with Shift+Tab without changing the draft or opening a menu', async () => {
+    const { app, setup, client } = await openView();
+    app.composer.setText('Keep this draft');
+    setup.mockInput.pressTab({ shift: true }); await settle(setup);
+    expect(client.setMode).toHaveBeenLastCalledWith('plan');
+    expect(setup.captureCharFrame()).toContain('PLAN');
+    setup.mockInput.pressTab({ shift: true }); await settle(setup);
+    expect(client.setMode).toHaveBeenLastCalledWith('build');
+    expect(setup.captureCharFrame()).toContain('CODE');
+    expect(app.composer.plainText).toBe('Keep this draft'); expect(client.send).not.toHaveBeenCalled();
+    setup.mockInput.pressKey('p', { ctrl: true }); await settle(setup);
+    setup.mockInput.pressTab({ shift: true }); setup.mockInput.pressTab({ shift: true }); await settle(setup);
+    expect(client.setMode.mock.calls.slice(-2).map(call => call[0])).toEqual(['plan', 'build']);
+    expect(app.composer.focused).toBe(true); expect(app.composer.plainText).toBe('Keep this draft');
+    await setup.mockInput.pressKeys(['\x1b[Z']); await settle(setup);
+    expect(client.setMode).toHaveBeenLastCalledWith('plan');
+  });
+
+  it('loads, searches, reviews and selects a provider model without sending a task', async () => {
+    const { app, setup, client } = await openView();
+    app.composer.setText('/model'); setup.mockInput.pressEnter(); await settle(setup);
+    expect(client.models).toHaveBeenCalledTimes(1);
+    expect(setup.captureCharFrame()).toContain('Choose model');
+    await setup.mockInput.pressKeys([...'private-model', '\r']); await settle(setup);
+    expect(setup.captureCharFrame()).toContain('Configured context limit');
+    expect(client.setModel).not.toHaveBeenCalled();
+    setup.mockInput.pressEnter(); await settle(setup);
+    expect(client.setModel).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: 'private-model' }));
+    expect(setup.captureCharFrame()).toContain('private-model'); expect(client.send).not.toHaveBeenCalled();
+    expect(app.composer.focused).toBe(true);
+  });
+
+  it('supports manual model IDs after discovery fails and never reopens a cancelled request', async () => {
+    const { app, setup, client } = await openView();
+    client.models.mockRejectedValueOnce(new Error('Model discovery returned HTTP 404'));
+    app.composer.setText('/model'); setup.mockInput.pressEnter(); await settle(setup);
+    expect(setup.captureCharFrame()).toContain('Model list unavailable');
+    await setup.mockInput.pressKeys([...'Enter a model ID', '\r']); await settle(setup);
+    await setup.mockInput.pressKeys([...'my-private-id', '\r']); await settle(setup);
+    setup.mockInput.pressEnter(); await settle(setup);
+    expect(client.setModel).toHaveBeenCalledWith(expect.objectContaining({ id: 'my-private-id', source: 'manual' }));
+    let finish!: (models: ModelChoice[]) => void;
+    client.models.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    app.composer.setText('/model'); setup.mockInput.pressEnter(); await settle(setup);
+    setup.mockInput.pressEscape(); await settle(setup);
+    finish([{ id: 'late-model', name: 'Late', source: 'provider' }]); await settle(setup);
+    expect(app.composer.focused).toBe(true); expect(app.paletteInput.visible).toBe(false);
   });
 
   it('keeps the assistant Markdown node stable when usage, status or composer change', async () => {

@@ -6,13 +6,14 @@ import {
 } from '@opentui/core';
 import { basename } from 'node:path';
 import type { MorphessRuntime } from '../runtime/runtime.js';
+import { validateModelId, type ModelChoice } from '../models/catalog.js';
 import { TuiController } from './controller.js';
 import { previewDetail, sanitizeText, type TuiEntry, type TuiSnapshot } from './state.js';
 import { MORPH_MARK, MORPH_MARK_SMALL, MORPH_GREEN } from './brand.js';
 import { defaultPreferences, readPreferences, rememberDraft, writePreferences, type TuiPreferences } from './preferences.js';
 import { fuzzyScore, isTheme, THEMES, tokens, type ThemeName, type TuiTheme } from './theme.js';
 
-type Client = Pick<TuiController, 'state' | 'subscribe' | 'send' | 'abort' | 'newSession' | 'switchSession' | 'sessions' | 'fork' | 'compact' | 'setMode' | 'answer' | 'diff' | 'files' | 'tools' | 'provider'>;
+type Client = Pick<TuiController, 'state' | 'subscribe' | 'send' | 'abort' | 'newSession' | 'switchSession' | 'sessions' | 'fork' | 'compact' | 'setMode' | 'answer' | 'diff' | 'files' | 'tools' | 'provider' | 'models' | 'setModel'>;
 interface MenuItem { name: string; description: string; run(): void | Promise<unknown>; }
 interface Row { box: BoxRenderable; label: TextRenderable; body: TextRenderable | MarkdownRenderable; thinking: TextRenderable; revision: number; role: string; }
 export interface TuiOptions { preferences?: TuiPreferences; stateDir?: string; launchMark?: boolean; onExit?(): void | Promise<void>; }
@@ -78,6 +79,9 @@ export class MorphessTui {
   #lastQuestion?: number;
   #launchMark = false;
   #launchTimer?: NodeJS.Timeout;
+  #modelRequest?: AbortController;
+  #queryAction?: (value: string) => void;
+  #modeQueue = Promise.resolve();
 
   constructor(readonly renderer: CliRenderer, readonly client: Client, readonly options: TuiOptions = {}) {
     this.#state = client.state; this.#session = client.state.sessionId;
@@ -99,7 +103,7 @@ export class MorphessTui {
     this.#logo = this.text(MORPH_MARK, this.#prefs.theme === 'light' ? p.green : MORPH_GREEN, { id: 'morph-logo', width: 28, height: 12, flexShrink: 0, selectable: false });
     this.#welcome.add(this.#logo);
     this.#welcomeLabel = this.text('New session', p.text, { height: 1, attributes: TextAttributes.BOLD, marginTop: 1 }); this.#welcome.add(this.#welcomeLabel);
-    this.#welcomeHint = this.text('Enter a task · Ctrl+P commands · /attach path', p.muted, { height: 2, textAlign: 'center', maxWidth: 62, paddingX: 1 }); this.#welcome.add(this.#welcomeHint);
+    this.#welcomeHint = this.text('Enter a task · /model choose model · Shift+Tab mode', p.muted, { height: 2, textAlign: 'center', maxWidth: 62, paddingX: 1 }); this.#welcome.add(this.#welcomeHint);
     this.#conversation.add(this.#welcome);
     this.transcript = new ScrollBoxRenderable(renderer, { id: 'transcript', flexGrow: 1, minHeight: 0, scrollY: true, scrollX: false, stickyScroll: true, stickyStart: 'bottom', viewportCulling: true, paddingX: 2, contentOptions: { flexDirection: 'column', paddingBottom: 1 }, scrollbarOptions: { showArrows: false } });
     this.#conversation.add(this.transcript);
@@ -162,7 +166,7 @@ export class MorphessTui {
     const width = Math.min(96, Math.max(24, this.renderer.width - (narrow ? 2 : 12)));
     this.#palette.width = width; this.#palette.left = Math.max(0, Math.floor((this.renderer.width - width) / 2));
     this.#palette.height = Math.min(24, Math.max(8, this.renderer.height - 4)); this.#palette.top = Math.max(0, Math.floor((this.renderer.height - this.#palette.height) / 2));
-    this.#footer.content = narrow ? 'Enter send · C-p commands · C-q quit' : 'Enter send   Shift+Enter newline   Ctrl+P commands   Ctrl+O sessions   Ctrl+B inspector   Ctrl+Q quit';
+    this.#footer.content = narrow ? 'Enter send · S-Tab mode · /model · C-p menu · C-q quit' : 'Enter send · Shift+Tab mode · /model choose model · Ctrl+P commands · Ctrl+Q quit';
     this.update(this.#state);
     this.renderer.requestRender();
   };
@@ -176,7 +180,7 @@ export class MorphessTui {
       for (const row of this.#rows.values()) row.box.destroyRecursively(); this.#rows.clear();
     }
     this.#state = state;
-    this.#model.content = `${state.model}  ${state.mode === 'plan' ? 'PLAN' : 'BUILD'}`;
+    this.#model.content = `${state.model}  ${state.mode === 'plan' ? 'PLAN' : 'CODE'}`;
     this.#location.content = `${state.workspace}  /  session ${state.sessionId}`;
     const hasEntries = state.entries.length > 0;
     this.#welcome.visible = !hasEntries || this.#launchMark; this.transcript.visible = hasEntries && !this.#launchMark;
@@ -193,7 +197,7 @@ export class MorphessTui {
     } else this.#lastQuestion = undefined;
     this.composer.placeholder = question ? 'Enter answer' : state.busy ? 'Enter steering instructions' : 'Enter a task or /command';
     const estimate = state.context?.estimatedInputTokens;
-    this.#composerMeta.content = `${question ? 'ANSWER · Ctrl+R full question' : state.busy ? 'WORKING' : state.mode === 'plan' ? 'PLAN · read-only tools' : 'BUILD'}${this.#images.length ? `  ${this.#images.length} image(s) attached` : ''}  ·  ${state.policy}`;
+    this.#composerMeta.content = `${question ? 'ANSWER · Ctrl+R full question' : state.busy ? 'WORKING' : state.mode === 'plan' ? 'PLAN · read-only' : 'CODE · edit and tool access'}${this.#images.length ? `  ${this.#images.length} image(s) attached` : ''}  ·  ${state.policy}`;
     this.#composerBox.borderColor = question ? this.#theme.warning : this.#theme.accent;
     this.#status.fg = this.#error || state.error ? this.#theme.error : this.#theme.muted;
     const activity = question ? 'Awaiting answer' : state.busy ? `${state.status || 'Working'} · Esc stops` : state.status || 'Ready';
@@ -270,7 +274,12 @@ export class MorphessTui {
       case '/fork': await this.client.fork(argument ? Number(argument) : undefined); break;
       case '/compact': await this.client.compact(); this.notify('Context compaction requested.'); break;
       case '/plan': await this.client.setMode('plan'); break;
+      case '/code':
       case '/build': await this.client.setMode('build'); break;
+      case '/mode': this.showModes(); break;
+      case '/models':
+      case '/model': if (argument) this.reviewModel({ id: validateModelId(argument), name: argument, source: 'manual' }); else await this.showModels(); break;
+      case '/codemode': this.showCodeTools(); break;
       case '/abort': await this.client.abort(); break;
       case '/diff': await this.showDiff(); break;
       case '/tools': this.showTools(); break;
@@ -296,9 +305,11 @@ export class MorphessTui {
 
   private commands(): MenuItem[] {
     return [
+      { name: 'Choose model', description: `Current: ${this.#state.model} · /model · provider /models catalog`, run: () => this.showModels() },
+      { name: 'Change mode', description: `Current: ${this.#state.mode === 'plan' ? 'Plan' : 'Code'} · Shift+Tab · edits or read-only planning`, run: () => this.showModes() },
       { name: 'New session', description: 'Start a fresh durable conversation · Ctrl+N', run: () => this.client.newSession() },
       { name: 'Switch session', description: 'Search existing conversations · Ctrl+O', run: () => this.showSessions() },
-      { name: this.#state.mode === 'plan' ? 'Switch to build mode' : 'Switch to plan mode', description: this.#state.mode === 'plan' ? 'Restore your previous enabled tools' : 'Inspect and plan using read-only tools', run: () => this.client.setMode(this.#state.mode === 'plan' ? 'build' : 'plan') },
+      { name: 'Code tools', description: `JavaScript sandbox for tool calls · ${this.#state.codemode === false ? 'disabled in configuration' : this.#state.mode === 'plan' ? 'available in Code mode' : 'enabled'} · /codemode`, run: () => this.showCodeTools() },
       { name: 'Inspect tool activity', description: 'Read full retained tool arguments and output · Ctrl+T', run: () => this.showTools() },
       { name: 'Inspect agent tools', description: 'Tools, code mode, MCP, schemas and policy', run: () => this.showAgentTools() },
       { name: 'Provider settings', description: 'Endpoint, model, credential source and configuration commands', run: () => this.showProvider() },
@@ -318,25 +329,78 @@ export class MorphessTui {
   }
 
   showCommands() { this.showMenu('Commands', this.commands()); }
+  private showModes() {
+    this.showMenu('Choose mode · Shift+Tab cycles', [
+      { name: `${this.#state.mode === 'build' ? '* ' : ''}Code`, description: 'Edit files and use enabled tools · /code', run: () => this.client.setMode('build') },
+      { name: `${this.#state.mode === 'plan' ? '* ' : ''}Plan`, description: 'Read, inspect, and plan with read-only tools · /plan', run: () => this.client.setMode('plan') },
+    ]);
+  }
+  private cycleMode(): Promise<void> {
+    this.#modeQueue = this.#modeQueue.catch(() => {}).then(() => this.client.setMode(this.client.state.mode === 'plan' ? 'build' : 'plan'));
+    return this.#modeQueue;
+  }
+  private showCodeTools() {
+    this.showText('Code tools', `The codemode tool runs JavaScript in a sandbox and calls enabled harness tools through tools.*.\n\n${this.#state.codemode === false ? 'Disabled: set codemode to true in morphess.json and restart.' : this.#state.mode === 'plan' ? 'Installed. Switch to Code with Shift+Tab or /code to enable it.' : 'Enabled. The agent chooses this tool when useful; no extra workflow mode is required.'}\n\nTool permissions and durable execution still apply. Inspect its parameters with /catalog or morphess tools codemode --json.\n\nCode is the editing workflow; Plan restricts tools to read-only work. /build remains an alias for /code.`);
+  }
+  private async showModels(refresh = false): Promise<void> {
+    this.#modelRequest?.abort();
+    const request = new AbortController();
+    this.showText('Models', 'Loading the configured provider’s /models catalog…');
+    this.#modelRequest = request;
+    const session = this.#session;
+    try {
+      const models = await this.client.models(refresh, request.signal);
+      if (request.signal.aborted || this.#closed || this.#session !== session) return;
+      this.#modelRequest = undefined;
+      this.showMenu('Choose model', [
+        ...models.map(model => ({ name: `${model.id === this.#state.model ? '* ' : ''}${model.id}`, description: `${model.name !== model.id ? `${model.name} · ` : ''}${model.contextWindow ? `${tokens(model.contextWindow)} context` : 'Limits not reported'} · ${model.input?.join('/') ?? 'modalities not reported'}${model.source === 'configured' ? ' · configured profile' : ''}`, run: () => this.reviewModel(model) })),
+        { name: 'Enter a model ID', description: 'For a private model or a provider without /models', run: () => this.manualModel() },
+        { name: 'Refresh model list', description: 'Fetch a fresh catalog from this provider', run: () => this.showModels(true) },
+      ]);
+    } catch (error) {
+      if (request.signal.aborted || this.#closed || this.#session !== session) return;
+      this.#modelRequest = undefined;
+      this.showMenu('Model list unavailable', [
+        { name: 'Retry model discovery', description: error instanceof Error ? error.message : 'Check the endpoint and key', run: () => this.showModels(true) },
+        { name: 'Enter a model ID', description: 'Review and use the configured limits and modalities', run: () => this.manualModel() },
+        { name: 'Provider settings', description: 'Inspect the endpoint and credential source', run: () => this.showProvider() },
+      ]);
+    }
+  }
+  private manualModel() {
+    this.showMenu('Enter model ID', []);
+    this.#queryAction = id => this.reviewModel({ id: validateModelId(id), name: id, source: 'manual' });
+    this.paletteInput.placeholder = 'Model ID, for example morph-kimik3'; this.filterMenu();
+  }
+  private reviewModel(model: ModelChoice) {
+    this.showMenu(`Load ${model.id}`, [
+      { name: 'Use in this session', description: `${model.contextWindow ? `${tokens(model.contextWindow)} context` : 'Configured context limit'} · ${model.input?.join('/') ?? 'configured modalities'} · configured output ceiling. ${model.source === 'manual' || !model.contextWindow || !model.input ? 'Unreported capabilities inherit your configuration.' : 'Provider-reported capabilities.'}`, run: async () => { await this.client.setModel(model); this.notify(`Model: ${model.id} · saved for this session`); } },
+      { name: 'Back to model list', description: 'Choose another model or refresh the provider catalog', run: () => this.showModels() },
+    ]);
+  }
   private showMenu(title: string, items: MenuItem[]) {
     if (this.#closed) return;
+    this.#modelRequest?.abort(); this.#modelRequest = undefined; this.#queryAction = undefined;
     this.#overlay = true; this.#palette.visible = true; this.#paletteTitle.content = `${title}  ·  Esc closes`;
     this.#menu = items.map(item => ({ ...item, name: sanitizeText(item.name, 512), description: sanitizeText(item.description, 1_000) })); this.#viewer.visible = false; this.paletteList.visible = true; this.paletteInput.visible = true;
     this.paletteInput.placeholder = `Search ${title.toLowerCase()}…`; this.paletteInput.value = ''; this.filterMenu(); this.paletteInput.focus();
   }
   private filterMenu() {
+    if (this.#queryAction) { this.paletteList.options = [{ name: this.paletteInput.value ? `Use ${this.paletteInput.value}` : 'Enter a model ID above', description: 'Enter reviews the profile; Escape cancels', value: 0 }]; return; }
     this.#filtered = this.#menu.map((item, index) => ({ item, index, score: fuzzyScore(this.paletteInput.value, `${item.name} ${item.description}`) })).filter(match => match.score >= 0).sort((a, b) => b.score - a.score || a.index - b.index).slice(0, 100).map(match => match.item);
     this.paletteList.options = this.#filtered.length ? this.#filtered.map((item, index) => ({ name: item.name, description: item.description, value: index })) : [{ name: 'No matches', description: 'Try another search', value: -1 }];
     this.paletteList.setSelectedIndex(0);
   }
   private choose() {
     if (!this.#overlay || !this.paletteList.visible) return;
+    if (this.#queryAction) { const action = this.#queryAction; const value = this.paletteInput.value.trim(); this.run(() => action(value)); return; }
     const item = this.#filtered[this.paletteList.getSelectedIndex()]; if (!item) return;
     this.closeOverlay(); this.run(() => item.run());
   }
-  private closeOverlay() { this.#overlay = false; this.#palette.visible = false; this.composer.focus(); }
+  private closeOverlay() { this.#modelRequest?.abort(); this.#modelRequest = undefined; this.#queryAction = undefined; this.#overlay = false; this.#palette.visible = false; this.composer.focus(); }
   private showText(title: string, text: string) {
     if (this.#closed) return;
+    this.#modelRequest?.abort(); this.#modelRequest = undefined; this.#queryAction = undefined;
     this.#overlay = true; this.#palette.visible = true; this.#paletteTitle.content = `${title}  ·  PgUp/PgDn scroll · Esc closes`;
     this.paletteInput.visible = false; this.paletteList.visible = false; this.#viewer.visible = true; this.#viewerText.content = sanitizeText(text, 64_000) || 'Nothing to show.'; this.#viewer.scrollTo(0); this.composer.blur();
   }
@@ -374,7 +438,7 @@ export class MorphessTui {
     if (!question) { this.notify('There is no pending question.'); return; }
     this.showText(`Question · session ${question.conversationId}`, `${question.question}\n\n${question.options.map((option, index) => `${index + 1}. ${option}`).join('\n\n')}\n\nEscape returns to the composer. Type a number or a freeform answer.`);
   }
-  private showHelp() { this.showText('Keyboard and commands', `Morphess is an independent, unofficial harness for Morph inference.\nIt is not developed, endorsed, sponsored, or backed by Morph.\n\nEnter          Send prompt or answer pending question\nShift+Enter    Add a new line\nCtrl+P         Search commands\nCtrl+N         New session\nCtrl+O         Switch session\nCtrl+B         Toggle inspector (wide terminals)\nCtrl+T         Inspect tools\nCtrl+Y         Copy selection or last answer\nCtrl+R         Read full pending question and choices\nCtrl+U         Clear composer\nUp / Down      Recall prompt history when composer is empty\nPageUp/Down    Scroll transcript or detail view\nEscape         Close a menu; otherwise stop current work\nCtrl+C         Stop work, or quit when idle\nCtrl+Q         Quit and preserve unfinished work\n\n/new  /sessions  /fork [entry]  /compact\n/plan  /build  /abort  /diff  /tools  /catalog  /provider  /files [query]\n/attach /path/to/image.png  /theme [forest|light|contrast]\n/thinking  /answer text  /help  /quit\n\nPlan mode restricts agent tools. Build mode restores your prior selection.\nHost shell access still requires explicit --trusted or trusted configuration.\nAccepted work is durable. Closing the UI preserves unfinished tasks.\nType a number to select a suggested answer, or give a freeform reply.`); }
+  private showHelp() { this.showText('Keyboard and commands', `Morphess is an independent, unofficial harness for Morph inference.\nIt is not developed, endorsed, sponsored, or backed by Morph.\n\nEnter          Send prompt or answer pending question\nShift+Enter    Add a new line\nShift+Tab      Cycle Code / Plan\nCtrl+P         Search commands\nCtrl+N         New session\nCtrl+O         Switch session\nCtrl+B         Toggle inspector (wide terminals)\nCtrl+T         Inspect tools\nCtrl+Y         Copy selection or last answer\nCtrl+R         Read full pending question and choices\nCtrl+U         Clear composer\nUp / Down      Recall prompt history when composer is empty\nPageUp/Down    Scroll transcript or detail view\nEscape         Close a menu; otherwise stop current work\nCtrl+C         Stop work, or quit when idle\nCtrl+Q         Quit and preserve unfinished work\n\n/new  /sessions  /fork [entry]  /compact\n/mode  /code  /plan  /build (alias)  /model [id]  /codemode  /abort  /diff  /tools  /catalog  /provider  /files [query]\n/attach /path/to/image.png  /theme [forest|light|contrast]\n/thinking  /answer text  /help  /quit\n\nCode mode enables edits and tools. Plan mode uses read-only tools. Shift+Tab cycles them.\n/model opens the authenticated provider catalog; selected profiles persist per session.\nThe codemode JavaScript tool is available in Code mode when enabled in configuration.\nHost shell access still requires explicit --trusted or trusted configuration.\nAccepted work is durable. Closing the UI preserves unfinished tasks.\nType a number to select a suggested answer, or give a freeform reply.`); }
   private toggleSidebar() { this.#prefs.sidebar = !this.#prefs.sidebar; this.resize(); this.saveSoon(); if (this.renderer.width < 110 && this.#prefs.sidebar) this.notify('Inspector appears at 110 columns or wider.'); }
   private copyAnswer() {
     const text = this.renderer.getSelection()?.getSelectedText() || this.#state.entries.filter(entry => entry.role === 'assistant').at(-1)?.text;
@@ -404,6 +468,7 @@ export class MorphessTui {
     const consume = () => { key.preventDefault(); key.stopPropagation(); };
     if (key.eventType === 'release') return;
     if (this.#launchMark) { clearTimeout(this.#launchTimer); this.#launchMark = false; this.update(this.#state); }
+    if (key.name === 'tab' && key.shift) { consume(); if (this.#overlay) this.closeOverlay(); this.run(() => this.cycleMode()); return; }
     if (this.#overlay) {
       if (key.name === 'escape' || (key.ctrl && key.name === 'p')) { consume(); this.closeOverlay(); return; }
       if (key.ctrl && key.name === 'q') { consume(); this.run(() => this.options.onExit?.()); return; }
@@ -449,6 +514,7 @@ export class MorphessTui {
     this.#saveQueue = this.#saveQueue.then(() => writePreferences(this.options.stateDir!, value)).catch(() => { if (!this.#closed) this.notify('Could not save terminal preferences.', true); });
   }
   async close() {
+    this.#modelRequest?.abort();
     if (this.#closed) return; this.#closed = true; clearTimeout(this.#saveTimer); clearTimeout(this.#launchTimer);
     rememberDraft(this.#prefs, this.#session, this.composer.plainText); this.save();
     this.#off(); this.renderer.keyInput.off('keypress', this.onKey); this.renderer.off(CliRenderEvents.RESIZE, this.resize);

@@ -21,6 +21,7 @@ export interface TuiSnapshot {
   model: string;
   policy: string;
   mode: 'build' | 'plan';
+  codemode?: boolean;
   busy: boolean;
   entries: TuiEntry[];
   questions: UserQuestion[];

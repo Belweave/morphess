@@ -17,6 +17,7 @@ import { configureCliHelp } from './cli/help.js';
 import { registerMcpCommands } from './cli/mcp.js';
 import { registerProviderCommands } from './cli/provider.js';
 import { getProviderCredentialStatus } from './models/credentials.js';
+import { discoverModels } from './models/catalog.js';
 import { sanitizeText, summarizeUsage } from './tui/state.js';
 
 export function createCli() {
@@ -81,6 +82,17 @@ export function createCli() {
       if (!keyPresent && !loaded.model.allowUnauthenticated) process.exitCode = 1;
     });
 
+  program.command('models').description('Fetch available models from the configured provider’s /models endpoint')
+    .option('--json', 'print the provider catalog as JSON')
+    .action(async (options: { json?: boolean }) => {
+      const loaded = await config(); const models = await discoverModels(loaded.model);
+      if (options.json) { stdout.write(`${JSON.stringify(models, null, 2)}\n`); return; }
+      stdout.write(`Models from ${sanitizeText(loaded.model.baseUrl)}\n`);
+      if (!models.length) stdout.write('The provider returned no available models.\n');
+      for (const model of models) stdout.write(`${model.id === loaded.model.id ? '* ' : '  '}${sanitizeText(model.id, 256)}  ${model.contextWindow ? `${model.contextWindow} context` : 'limits not reported'}${model.input ? ` · ${model.input.join('/')}` : ''}\n`);
+      stdout.write('\nIn the TUI use /model; set a launch default with morphess configure --model <id>.\n');
+    });
+
   program.command('run').description('Run a coding task; use - as prompt to read stdin').argument('[prompt...]')
     .option('-s, --session <id>', 'existing conversation; default root', 'root').option('--request-id <key>', 'durable idempotency key')
     .option('--image <file...>', 'attach local images').option('--json', 'print the final result as JSON').option('--events', 'stream durable agent events as JSONL')
@@ -106,7 +118,8 @@ export function createCli() {
           watch.start(async (events) => { for (const event of events) stdout.write(`${JSON.stringify(event)}\n`); });
         }
         try {
-          const content = await withImages(prompt, options.image ?? [], { stateDir: runtime.config.stateDir, supportsImages: runtime.config.model.input.includes('image') });
+          const profile = await runtime.modelProfile(conversation.id);
+          const content = await withImages(prompt, options.image ?? [], { stateDir: runtime.config.stateDir, supportsImages: profile.input.includes('image') });
           const submission = await conversation.submit({ type: 'input', content, requestId: options.requestId }, BACKGROUND_CONTEXT);
           const answer = await runtime.answer(submission.id);
           await watch?.stop();
@@ -126,7 +139,7 @@ export function createCli() {
       let conversation = await runtime.conversation(options.session);
       setTarget(conversation);
       const terminal = createInterface({ input: stdin, output: stdout });
-      stdout.write(`Morphess · ${runtime.config.model.id} · ${runtime.config.policy.mode}\nSession ${conversation.id}. /new /status /compact /quit\n`);
+      stdout.write(`Morphess · ${(await runtime.modelProfile(conversation.id)).id} · ${runtime.config.policy.mode}\nSession ${conversation.id}. /new /status /compact /quit\n`);
       try {
         while (true) {
           let prompt: string;

@@ -4,13 +4,20 @@ import { EventEmitter } from 'node:events';
 const configured = new WeakSet<Command>();
 const GROUPS = ['Setup:', 'Coding:', 'Sessions:', 'Integrations:'];
 const COMMAND_GROUP: Record<string, string> = {
-  init: 'Setup:', configure: 'Setup:', auth: 'Setup:', doctor: 'Setup:',
+  init: 'Setup:', configure: 'Setup:', auth: 'Setup:', doctor: 'Setup:', models: 'Setup:',
   tui: 'Coding:', menu: 'Coding:', run: 'Coding:', chat: 'Coding:',
   usage: 'Sessions:', sessions: 'Sessions:', resume: 'Sessions:', export: 'Sessions:', fork: 'Sessions:',
   tools: 'Integrations:', serve: 'Integrations:', mcp: 'Integrations:',
 };
 
 const EXAMPLES: Record<string, string> = {
+  models: `Examples:
+  morphess models
+  morphess models --json
+  morphess configure --model model-id
+
+Uses the configured endpoint and credential to GET /models. The TUI's
+/model picker selects a model for the current durable session.`,
   tui: `Examples:
   morphess
   morphess tui --session root

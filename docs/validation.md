@@ -31,7 +31,7 @@ Local fixture results do not establish remote model quality, provider cache hit 
 
 ```sh
 npm pack
-npm install --global ./belweave-morphess-0.2.2.tgz --omit=dev --ignore-scripts
+npm install --global ./belweave-morphess-0.2.3.tgz --omit=dev --ignore-scripts
 export PATH="$(npm prefix --global)/bin:$PATH"
 morphess --version
 morphess --help

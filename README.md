@@ -12,7 +12,7 @@ The terminal requires Node 26.4+ on macOS or Linux. Headless commands and librar
 npm ci --ignore-scripts
 npm run check
 npm pack
-npm install --global ./belweave-morphess-0.2.2.tgz --omit=dev --ignore-scripts
+npm install --global ./belweave-morphess-0.2.3.tgz --omit=dev --ignore-scripts
 export PATH="$(npm prefix --global)/bin:$PATH"
 morphess --version
 morphess --help
@@ -28,7 +28,7 @@ From the project you want to work on:
 morphess init
 ```
 
-Edit `morphess.json` with your real endpoint and model ID. For example:
+Morph defaults are ready to configure with `morphess auth login`. Use `morphess configure` to change endpoint/model settings. The TUI’s `/model` picker fetches the provider catalog; **Shift+Tab** cycles Code and Plan modes. Model configuration example:
 
 ```json
 {
@@ -59,6 +59,7 @@ morphess
 ```sh
 morphess tui --session root
 morphess menu
+morphess models --json
 morphess tools --all
 morphess tools read --json --session root
 morphess run "Inspect this repository and explain the parser"

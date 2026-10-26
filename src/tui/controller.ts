@@ -10,6 +10,7 @@ import { getOrThrow } from '@earendil-works/pi-durable/env';
 import type { MorphessRuntime } from '../runtime/runtime.js';
 import { withImages } from '../media/input.js';
 import { getProviderCredentialStatus, providerCredentialDirectory } from '../models/credentials.js';
+import type { ModelChoice } from '../models/catalog.js';
 import { QuestionsDoc, answerQuestion, listQuestions, type UserQuestion } from '../interaction/index.js';
 import { WorkDoc } from '../workflow/work.js';
 import { createWorkspaceEnvironment, type WorkspaceExecutionEnv } from '../policy/workspace.js';
@@ -51,7 +52,7 @@ export class TuiController {
   private constructor(runtime: MorphessRuntime, env: WorkspaceExecutionEnv) {
     this.runtime = runtime; this.#env = env;
     this.#snapshot = { sessionId: runtime.root.id, workspace: sanitizeText(runtime.config.workspace, 4_096),
-      model: sanitizeText(runtime.config.model.id, 500), policy: runtime.config.policy.mode, mode: 'build', busy: false,
+      model: sanitizeText(runtime.config.model.id, 500), policy: runtime.config.policy.mode, mode: 'build', codemode: runtime.config.codemode, busy: false,
       entries: [], questions: [], plan: [], usage: this.#projection.usage, status: 'Opening session', version: 0 };
   }
 
@@ -201,6 +202,12 @@ export class TuiController {
     this.#events = events;
     this.#observe([events.snapshot], epoch);
     events.start(async batch => { this.#observe(batch, epoch); });
+    const agent = await this.runtime.harness.watchDoc(AgentDoc, conversation.id, this.#context());
+    if (agent) {
+      if (!this.#valid(epoch)) { await agent.stop(); return; }
+      const apply = (value: typeof agent.value) => { if (this.#valid(epoch)) { this.#snapshot = { ...this.#snapshot, model: sanitizeText(value?.model?.modelId ?? this.runtime.config.model.id, 500) }; this.#publish(); } };
+      this.#documents.push(agent); agent.start(async value => { apply(value); }); apply(agent.value);
+    }
     const work = await this.runtime.harness.watchDoc(WorkDoc, conversation.id, this.#context());
     if (work) {
       if (!this.#valid(epoch)) { await work.stop(); return; }
@@ -222,8 +229,9 @@ export class TuiController {
     this.#assertOpen(); const epoch = this.#epoch; const conversation = this.#conversation;
     try {
       if (!text.trim() && !images.length) throw new Error('Enter a message or attach an image');
+      const profile = await this.runtime.modelProfile(conversation.id);
       const content = await withImages(text, images.map(path => resolve(this.runtime.config.workspace, path)), {
-        stateDir: this.runtime.config.stateDir, supportsImages: this.runtime.config.model.input.includes('image'),
+        stateDir: this.runtime.config.stateDir, supportsImages: profile.input.includes('image'),
       });
       if (!this.#valid(epoch)) throw new Error('Session changed before message admission');
       const waiting = this.#context();
@@ -360,8 +368,22 @@ export class TuiController {
 
   async provider() {
     this.#assertOpen();
-    const { baseUrl, id, api, apiKeyEnv } = this.runtime.config.model;
+    const { baseUrl, id, api, apiKeyEnv } = await this.runtime.modelProfile(this.#conversation.id);
     return { baseUrl, model: id, api, apiKeyEnv, ...await getProviderCredentialStatus(this.runtime.config.model) };
+  }
+
+  async models(refresh = false, signal?: AbortSignal): Promise<ModelChoice[]> {
+    this.#assertOpen();
+    return this.runtime.models({ refresh, signal: AbortSignal.any([this.#lifetime.signal, this.#session.signal, ...(signal ? [signal] : [])]) });
+  }
+
+  async setModel(choice: ModelChoice): Promise<void> {
+    this.#assertOpen(); const epoch = this.#epoch;
+    await this.runtime.selectModel(choice, this.#conversation.id, this.#context());
+    if (this.#valid(epoch)) {
+      this.#snapshot = { ...this.#snapshot, model: sanitizeText(choice.id, 500) };
+      await this.#refreshContext(epoch); this.#flush();
+    }
   }
 
   async close(): Promise<void> {

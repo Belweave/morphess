@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.3 — 2026-10-26
+
+- Added authenticated `/models` discovery, a searchable TUI model picker, manual IDs, refresh/cancellation, profile review, and the `models` CLI command.
+- Persisted native per-session model selection and restored selected profiles before scheduling; applied selected capacity, modalities, output limits, and compaction settings.
+- Added Shift+Tab mode cycling and an explicit mode selector; renamed the Build label to Code while retaining `/build` as an alias.
+- Put model/mode actions first in the command menu and documented the separate `codemode` tool.
+
 ## 0.2.2 — 2026-10-26
 
 - Fixed `auth login` staying alive after saving a key by releasing terminal input when no reader was active before entry.

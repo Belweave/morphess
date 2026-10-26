@@ -115,7 +115,8 @@ export async function serve(runtime: MorphessRuntime, options: ServeOptions = {}
     if (url.pathname === '/health' && request.method === 'GET') { json(response, healthy ? 200 : 503, { status: healthy ? 'ok' : 'unavailable' }); return; }
     if (token && !bearerMatches(request.headers.authorization, token)) throw new HttpError(401, 'Invalid bearer token');
     if (request.method === 'GET' && url.pathname === '/v1/models') {
-      json(response, 200, { object: 'list', data: [{ id: runtime.config.model.id, object: 'model', created: 0, owned_by: 'belweave', context_window: runtime.config.model.contextWindow, modalities: runtime.config.model.input }] }); return;
+      const profile = await runtime.modelProfile();
+      json(response, 200, { object: 'list', data: [{ id: profile.id, object: 'model', created: 0, owned_by: 'belweave', context_window: profile.contextWindow, modalities: profile.input }] }); return;
     }
     if (request.method === 'GET' && url.pathname === '/v1/sessions') {
       const page = await runtime.harness.commit((tx) => tx.scanConversations({}, boundedLimit(url), readCursor(url)), BACKGROUND_CONTEXT);
@@ -166,7 +167,7 @@ export async function serve(runtime: MorphessRuntime, options: ServeOptions = {}
     const action = sessionMatch[2];
     if (action === 'inputs' && request.method === 'POST') {
       const data = z.strictObject({ content: inputContentSchema, requestId: z.string().min(1).max(256).optional(), whenBusy: z.enum(['steer', 'followUp', 'reject']).optional() }).parse(await body(request));
-      validateImages(data.content);
+      validateImages(data.content, (await runtime.modelProfile(conversation.id)).input);
       const submission = await conversation.submit({ type: 'input', ...data }, BACKGROUND_CONTEXT);
       json(response, 202, { id: submission.id, conversationId: conversation.id }); return;
     }
@@ -189,8 +190,8 @@ export async function serve(runtime: MorphessRuntime, options: ServeOptions = {}
     throw new HttpError(405, 'Method not allowed');
   }
 
-  function validateImages(content: string | Array<{ type: string }>) {
-    if (typeof content !== 'string' && content.some((part) => part.type === 'image') && !runtime.config.model.input.includes('image')) throw new HttpError(400, 'This model profile does not declare image input');
+  function validateImages(content: string | Array<{ type: string }>, input: readonly string[]) {
+    if (typeof content !== 'string' && content.some((part) => part.type === 'image') && !input.includes('image')) throw new HttpError(400, 'This model profile does not declare image input');
   }
 
   async function events(conversation: Conversation, response: ServerResponse) {
@@ -237,11 +238,12 @@ export async function serve(runtime: MorphessRuntime, options: ServeOptions = {}
     response.once('close', () => controller.abort());
     if (response.destroyed) controller.abort();
     const context = withAbortSignal(controller.signal, BACKGROUND_CONTEXT);
-    if (data.model !== runtime.config.model.id) throw new HttpError(404, 'Unknown model');
+    const profile = await runtime.modelProfile(data.conversation_id ?? 'root');
+    if (data.model !== profile.id) throw new HttpError(404, 'Unknown model for this conversation');
     const last = data.messages.at(-1)!;
     if (last.role !== 'user') throw new Error('The last message must have role user');
     const inputs = data.messages.map((message) => ({ role: message.role, content: fromOpenAIContent(message.content) }));
-    for (const input of inputs) validateImages(input.content);
+    for (const input of inputs) validateImages(input.content, profile.input);
     const system = inputs.filter((message) => message.role === 'system' || message.role === 'developer');
     if (system.some((message) => typeof message.content !== 'string')) throw new Error('System instructions must be strings');
     let dialogueStarted = false;

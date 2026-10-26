@@ -31,7 +31,7 @@ An execution intent records each tool's replay policy before execution. Complete
 
 ## Model and context
 
-The model adapter supports configured OpenAI Chat Completions or Responses endpoints with text/image input. Endpoint IDs, context windows, output limits, authentication references, prices, and supported compatibility flags come from configuration.
+The model adapter supports configured OpenAI Chat Completions or Responses endpoints with text/image input. Endpoint, protocol, authentication references, prices, and compatibility flags come from configuration. Authenticated `/models` discovery supplies available IDs and explicit capabilities; Morph's roster can be enriched with keyless official metadata. Missing capabilities require review of inherited configuration before selection. Selected profiles are stored without keys and registered with Pi before scheduling resumes; native `AgentDoc` owns each session's model reference.
 
 Pi performs background or blocking compaction while preserving recent context. Defaults reserve 65,536 tokens and retain 131,072 recent tokens within the configured model window. Estimates use provider usage when available and remain approximate for tokenizer and image differences.
 
@@ -59,4 +59,4 @@ The controller projects native events into bounded display rows and watches plan
 
 A human question is keyed by its native tool task ID. The question and answer are durable, same-answer delivery is idempotent, and optional deadlines retain their timestamp after restart. Task abort cancels the wait; host close preserves it. The terminal watches ownership-verified active children to route their questions to the parent view.
 
-Plan mode commits its mode document and tool restriction atomically. Build mode restores recorded names against currently selected extensions without enabling unknown tools. Persisted native tool filters also govern headless reopening.
+Plan mode commits its mode document and tool restriction atomically. Code mode restores recorded names against currently selected extensions without enabling unknown tools; `/build` remains an alias. Persisted native tool filters also govern headless reopening.

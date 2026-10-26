@@ -51,7 +51,7 @@ An `ask_user` tool waits for a real answer, potentially across host restarts. Re
 }
 ```
 
-`model` must match the configured ID. Roles: system, developer, user, assistant; last message must be user. System/developer messages must precede dialogue; their content and historical assistant content must be text. Users can send standard text/image_url blocks. Images require inline PNG/JPEG/GIF/WebP data URLs; remote URLs are never fetched.
+`model` must match the selected root-session model for a new conversation, or the selected model of `conversation_id` when continuing. The gateway's `/v1/models` reports the root-session model and its current profile. Roles: system, developer, user, assistant; last message must be user. System/developer messages must precede dialogue; their content and historical assistant content must be text. Users can send standard text/image_url blocks. Images require inline PNG/JPEG/GIF/WebP data URLs; remote URLs are never fetched.
 
 Ordinary requests create a durable conversation and import history. Responses include `X-Morphess-Conversation`, with `conversation_id` also in nonstreaming JSON. To continue without resending history, send the optional `conversation_id` and exactly one new user message.
 

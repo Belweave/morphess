@@ -40,7 +40,7 @@ Guarded Git/ripgrep capabilities use fixed host executables rather than workspac
 
 The configured state directory and `.morphess` are protected. Temporary tool output uses `.morphess-tmp`. Filesystem checks are defense in depth against ordinary tool mistakes; they are not an OS sandbox. Trusted plugins and MCP executables can access the host directly. Use an external isolation boundary for untrusted code.
 
-Plan mode further narrows agent tools without changing host policy. Stop active work before entering plan mode. Build mode restores prior known tool names and does not grant additional shell authority.
+Plan mode further narrows agent tools without changing host policy. Stop active work before entering plan mode. Code mode restores prior known tool names and does not grant additional shell authority.
 
 ## Persistence and recovery
 

@@ -49,7 +49,7 @@ function boundedAdapter(adapter: ProviderStreams, config: MorphessConfig['model'
     const merged: StreamOptions = {
       ...options,
       signal: controller.signal, timeoutMs: hardMs,
-      maxTokens: Math.min(options.maxTokens ?? config.maxOutputTokens, config.maxOutputTokens),
+      maxTokens: Math.min(options.maxTokens ?? config.maxOutputTokens, config.maxOutputTokens, model.maxTokens),
       maxRetries: options.maxRetries ?? config.maxRetries,
       onPayload: async (payload, target) => {
         const replacement = await options.onPayload?.(payload, target);
@@ -71,7 +71,7 @@ function boundedAdapter(adapter: ProviderStreams, config: MorphessConfig['model'
             return a < b ? -1 : a > b ? 1 : 0;
           });
         }
-        const cap = Math.min(options.maxTokens ?? config.maxOutputTokens, config.maxOutputTokens);
+        const cap = Math.min(options.maxTokens ?? config.maxOutputTokens, config.maxOutputTokens, model.maxTokens);
         // Sampling extensions and payload hooks cannot bypass the configured output ceiling.
         const original = payload as Record<string, unknown>;
         const primary = model.api === 'openai-responses' ? 'max_output_tokens'
@@ -121,13 +121,13 @@ function boundedAdapter(adapter: ProviderStreams, config: MorphessConfig['model'
 }
 
 /** Register any explicitly described OpenAI-compatible model without catalog discovery. */
-export function createModelRuntime(config: MorphessConfig, env: NodeJS.ProcessEnv = process.env): { models: Models; model: { provider: string; modelId: string } } {
+export function createModelRuntime(config: MorphessConfig, env: NodeJS.ProcessEnv = process.env): { models: Models; model: { provider: string; modelId: string }; registerModel(profile: MorphessConfig['model']): void } {
   const profile = config.model;
   if (profile.input.some(type => type !== 'text' && type !== 'image')) {
     throw new Error('OpenAI adapters support text and image input only; audio/video/documents require an explicit adapter');
   }
   const api = profile.api === 'responses' ? 'openai-responses' : 'openai-completions';
-  const model: Model<typeof api> = {
+  const makeModel = (profile: MorphessConfig['model']): Model<typeof api> => ({
     provider: MORPHESS_PROVIDER, id: profile.id, name: profile.id, api, baseUrl: profile.baseUrl,
     reasoning: profile.reasoning, contextWindow: profile.contextWindow, maxTokens: profile.maxOutputTokens,
     input: profile.input,
@@ -136,10 +136,11 @@ export function createModelRuntime(config: MorphessConfig, env: NodeJS.ProcessEn
     ...(api === 'openai-completions'
       ? { compat: { supportsStore: false, supportsLongCacheRetention: false, ...profile.compatibility } }
       : { compat: { supportsDeveloperRole: profile.compatibility?.supportsDeveloperRole, supportsLongCacheRetention: profile.compatibility?.supportsLongCacheRetention ?? false } }),
-  };
+  });
+  const registered = [makeModel(profile)];
   const adapter = api === 'openai-responses' ? openAIResponsesApi() : openAICompletionsApi();
   const provider = createProvider({
-    id: MORPHESS_PROVIDER, name: 'Morphess OpenAI-compatible', baseUrl: profile.baseUrl, models: [model],
+    id: MORPHESS_PROVIDER, name: 'Morphess OpenAI-compatible', baseUrl: profile.baseUrl, models: registered,
     auth: { apiKey: {
       name: profile.apiKeyEnv,
       resolve: async ({ signal }) => {
@@ -156,5 +157,9 @@ export function createModelRuntime(config: MorphessConfig, env: NodeJS.ProcessEn
   });
   const models = createModels();
   models.setProvider(provider);
-  return { models, model: { provider: MORPHESS_PROVIDER, modelId: profile.id } };
+  return { models, model: { provider: MORPHESS_PROVIDER, modelId: profile.id }, registerModel(next) {
+    if (next.baseUrl !== profile.baseUrl || next.api !== profile.api) throw new Error('Restart the host to change endpoint or protocol');
+    const model = makeModel(next); const index = registered.findIndex(item => item.id === next.id);
+    if (index < 0) registered.push(model); else registered[index] = model;
+  } };
 }
