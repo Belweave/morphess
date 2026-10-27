@@ -18,7 +18,8 @@ The workspace contains a transcript, multiline composer, and status controls. Th
 | Ctrl+B | Toggle the context/plan inspector |
 | Ctrl+T | Inspect tool activity |
 | Ctrl+R | Open the complete pending question and suggested answers |
-| Ctrl+Y | Request clipboard copy of selection or the last answer |
+| Mouse selection + release | Copy the selected text |
+| Cmd+C / Ctrl+Shift+C / Ctrl+Y | Copy selection or the last answer, including in detail views |
 | Ctrl+U | Clear the composer |
 | Up / Down | Recall input history when the composer is empty |
 | PageUp / PageDown | Scroll the transcript or detail view |
@@ -26,7 +27,9 @@ The workspace contains a transcript, multiline composer, and status controls. Th
 | Ctrl+C | Stop active work; quit when idle |
 | Ctrl+Q | Quit while preserving recoverable work |
 
-Clipboard copy uses OSC52 in response to an explicit action and requires terminal support. Terminal settings control fonts, character size, and keyboard encoding.
+Releasing a mouse selection copies its text. Cmd+C (when forwarded by the terminal), Ctrl+Shift+C, and Ctrl+Y copy the selection, or the last assistant answer when nothing is selected. Copy preserves your draft and does not stop active work; plain Ctrl+C keeps its stop/quit behavior. The copy command is also available in Ctrl+P.
+
+Local sessions use OpenTUI's native system clipboard with terminal OSC52 as a fallback. Remote sessions send OSC52 to your terminal and do not write to the remote machine's clipboard. The status line confirms a local copy, reports a terminal copy request, or explains when clipboard access is unavailable. Terminal settings control clipboard permission, mouse selection overrides, fonts, character size, and keyboard encoding.
 
 ## Session actions
 

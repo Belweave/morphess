@@ -39,7 +39,7 @@ cd morphess
 npm ci --ignore-scripts
 npm run check
 npm pack
-npm install --global ./belweave-morphess-0.2.4.tgz --omit=dev --ignore-scripts
+npm install --global ./belweave-morphess-0.2.5.tgz --omit=dev --ignore-scripts
 export PATH="$(npm prefix --global)/bin:$PATH"
 morphess --version
 morphess --help

@@ -51,7 +51,7 @@ function mockClient(initial = initialState()) {
   return { client, emit, listeners };
 }
 async function openView(width = 120, height = 36, state = initialState(), options: TuiOptions = {}) {
-  const setup = await testing.createTestRenderer({ width, height, screenMode: 'alternate-screen', exitOnCtrlC: false, exitSignals: [], kittyKeyboard: true, useMouse: false });
+  const setup = await testing.createTestRenderer({ width, height, screenMode: 'alternate-screen', exitOnCtrlC: false, exitSignals: [], kittyKeyboard: true, useMouse: true });
   const mock = mockClient(state);
   const app = new MorphessTui(setup.renderer, mock.client, options);
   active.push({ app, setup });
@@ -106,6 +106,96 @@ describe.skipIf(!supported)('native OpenTUI view (Node 26.4+ with --experimental
     expect(client.send).toHaveBeenCalledExactlyOnceWith('First line\nSecond line', []);
     expect(app.composer.plainText).toBe('');
     expect(app.composer.focused).toBe(true);
+  });
+
+  it('copies mouse-selected transcript text only when the mouse is released', async () => {
+    const clipboard = { writeText: vi.fn(async (_text: string, _options: unknown) => ({ host: { status: 'written' as const }, terminal: { status: 'not-attempted' as const, capability: 'unknown' as const } })) };
+    const text = 'Select this exact text.';
+    const { setup, client } = await openView(120, 36, initialState({ entries: [{ id: 'reply', role: 'assistant', text, status: 'done', revision: 1 }] }), { ...{ clipboard } });
+    await vi.waitFor(async () => { await setup.renderOnce(); expect(setup.captureCharFrame()).toContain(text); }, { timeout: 5000, interval: 20 });
+    const lines = setup.captureCharFrame().split('\n');
+    const y = lines.findIndex(line => line.includes(text));
+    expect(y).toBeGreaterThanOrEqual(0);
+    const x = lines[y]!.indexOf(text);
+    await setup.mockMouse.pressDown(x, y);
+    await setup.mockMouse.moveTo(x + text.length - 1, y);
+    expect(clipboard.writeText).not.toHaveBeenCalled();
+    await setup.mockMouse.release(x + text.length - 1, y); await settle(setup);
+    await vi.waitFor(() => expect(clipboard.writeText).toHaveBeenCalledTimes(1));
+    expect(clipboard.writeText.mock.calls[0]?.[0]).toBe(text);
+    expect(clipboard.writeText.mock.calls[0]?.[1]).toMatchObject({ destination: 'best-available' });
+    expect(client.abort).not.toHaveBeenCalled();
+  });
+
+  it('copies the last answer with Cmd+C and Ctrl+Shift+C without modifying the draft or stopping work', async () => {
+    const clipboard = { writeText: vi.fn(async (_text: string, _options: unknown) => ({ host: { status: 'written' as const }, terminal: { status: 'not-attempted' as const, capability: 'unknown' as const } })) };
+    const text = 'Use this prompt.\n\n```ts\nconst answer = "λ";\n```';
+    const onExit = vi.fn();
+    const { app, setup, client } = await openView(120, 36, initialState({ busy: true, entries: [{ id: 'reply', role: 'assistant', text, status: 'done', revision: 1 }] }), { onExit, ...{ clipboard } });
+    app.composer.setText('Keep this draft');
+    setup.mockInput.pressKey('c', { super: true }); await settle(setup);
+    await vi.waitFor(() => expect(clipboard.writeText).toHaveBeenCalledTimes(1));
+    expect(clipboard.writeText.mock.calls[0]?.[0]).toBe(text);
+    setup.mockInput.pressKey('c', { ctrl: true, shift: true }); await settle(setup);
+    await vi.waitFor(() => expect(clipboard.writeText).toHaveBeenCalledTimes(2));
+    expect(app.composer.plainText).toBe('Keep this draft');
+    expect(client.abort).not.toHaveBeenCalled(); expect(onExit).not.toHaveBeenCalled();
+    setup.mockInput.pressCtrlC(); await settle(setup);
+    expect(client.abort).toHaveBeenCalledTimes(1);
+  });
+
+  it('copies text selected in a detail view and handles clipboard failure without closing it', async () => {
+    const clipboard = { writeText: vi.fn(async (_text: string, _options: unknown) => ({ host: { status: 'unsupported' as const }, terminal: { status: 'not-attempted' as const, capability: 'unsupported' as const } })) };
+    const { app, setup } = await openView(120, 36, initialState({ entries: [{ id: 'failed', role: 'tool', toolName: 'bash', status: 'error', text: 'Selected diagnostics', revision: 1 }] }), { ...{ clipboard } });
+    app.composer.setText('/errors'); setup.mockInput.pressEnter(); await settle(setup);
+    setup.mockInput.pressEnter(); await settle(setup);
+    const viewer = app.root.findDescendantById('detail-view')!;
+    const text = viewer.getChildren()[0]!;
+    setup.renderer.startSelection(text, text.x, text.y);
+    setup.renderer.updateSelection(text, text.x + 7, text.y, { finishDragging: true });
+    const selected = setup.renderer.getSelection()!.getSelectedText(); expect(selected).toBeTruthy();
+    setup.mockInput.pressKey('c', { super: true }); await settle(setup);
+    await vi.waitFor(() => expect(clipboard.writeText).toHaveBeenCalledTimes(1));
+    expect(clipboard.writeText.mock.calls[0]?.[0]).toBe(selected);
+    expect(setup.captureCharFrame()).toContain('Selected diagnostics');
+    expect(viewer.visible).toBe(true);
+    expect(setup.captureCharFrame()).toContain('Clipboard unavailable');
+  });
+
+  it('copies an editor selection ahead of the last answer and detaches copying on close', async () => {
+    const clipboard = { writeText: vi.fn(async (_text: string, _options: unknown) => ({ host: { status: 'written' as const }, terminal: { status: 'not-attempted' as const, capability: 'unknown' as const } })) };
+    const { app, setup } = await openView(120, 36, initialState({ entries: [{ id: 'reply', role: 'assistant', text: 'An older answer', status: 'done', revision: 1 }] }), { clipboard });
+    app.composer.setText('Keep this draft'); app.composer.setSelection(0, 4);
+    setup.mockInput.pressKey('c', { super: true }); await settle(setup);
+    await vi.waitFor(() => expect(clipboard.writeText).toHaveBeenCalledTimes(1));
+    expect(clipboard.writeText.mock.calls[0]?.[0]).toBe('Keep');
+    expect(app.composer.plainText).toBe('Keep this draft');
+    await app.close();
+    setup.mockInput.pressKey('c', { super: true }); await settle(setup);
+    expect(clipboard.writeText).toHaveBeenCalledTimes(1);
+    expect(setup.renderer.listenerCount(native.CliRenderEvents.SELECTION)).toBe(0);
+  });
+
+  it.each([false, true])('requests terminal copy when native copying is unavailable or the terminal is remote (remote=%s)', async remote => {
+    const host = {
+      maxWriteBytes: 1_000_000,
+      writeText: vi.fn(async () => ({ status: 'unsupported' as const })),
+      read: vi.fn(async () => ({ status: 'unsupported' as const })),
+      clear: vi.fn(async () => ({ status: 'unsupported' as const })), dispose: vi.fn(async () => {}),
+    };
+    const terminal = {
+      remote,
+      writeText: vi.fn(() => ({ status: 'attempted' as const, capability: 'supported' as const })),
+      clear: vi.fn(() => ({ status: 'not-attempted' as const, capability: 'unknown' as const })),
+    };
+    const clipboard = native.createClipboard({ host, terminal });
+    try {
+      const { setup } = await openView(120, 36, initialState({ entries: [{ id: 'reply', role: 'assistant', text: 'Copy through the terminal', status: 'done', revision: 1 }] }), { clipboard });
+      setup.mockInput.pressKey('y', { ctrl: true }); await settle(setup);
+      await vi.waitFor(() => expect(terminal.writeText).toHaveBeenCalledWith('Copy through the terminal', 'clipboard'));
+      expect(host.writeText).toHaveBeenCalledTimes(remote ? 0 : 1);
+      expect(setup.captureCharFrame()).toContain('Copy request sent to your terminal clipboard.');
+    } finally { await clipboard.dispose(); }
   });
 
   it('shows the bundled launch mark on resumed sessions and dismisses it without losing input', async () => {

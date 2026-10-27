@@ -1,8 +1,8 @@
 import {
   BoxRenderable, CliRenderEvents, createCliRenderer, InputRenderable, InputRenderableEvents, MarkdownRenderable,
   ScrollBoxRenderable, SelectRenderable, SelectRenderableEvents, SyntaxStyle, TextareaRenderable,
-  TextAttributes, TextRenderable, destroyTreeSitterClient,
-  type CliRenderer, type KeyEvent, type StyleDefinitionInput,
+  TextAttributes, TextRenderable, destroyTreeSitterClient, createClipboard, createHostClipboard, createRendererClipboardAdapter,
+  type CliRenderer, type ClipboardService, type KeyEvent, type Selection, type StyleDefinitionInput,
 } from '@opentui/core';
 import { basename } from 'node:path';
 import type { MorphessRuntime } from '../runtime/runtime.js';
@@ -16,7 +16,7 @@ import { fuzzyScore, isTheme, THEMES, tokens, type ThemeName, type TuiTheme } fr
 type Client = Pick<TuiController, 'state' | 'subscribe' | 'send' | 'abort' | 'newSession' | 'switchSession' | 'sessions' | 'fork' | 'compact' | 'setMode' | 'answer' | 'diff' | 'files' | 'tools' | 'provider' | 'models' | 'setModel'>;
 interface MenuItem { name: string; description: string; run(): void | Promise<unknown>; }
 interface Row { box: BoxRenderable; label: TextRenderable; body: TextRenderable | MarkdownRenderable; thinking: TextRenderable; revision: number; role: string; }
-export interface TuiOptions { preferences?: TuiPreferences; stateDir?: string; launchMark?: boolean; onExit?(): void | Promise<void>; onRestartTrusted?(): void | Promise<void>; }
+export interface TuiOptions { preferences?: TuiPreferences; stateDir?: string; launchMark?: boolean; clipboard?: Pick<ClipboardService, 'writeText'>; onExit?(): void | Promise<void>; onRestartTrusted?(): void | Promise<void>; }
 function syntaxStyles(p: TuiTheme): Record<string, StyleDefinitionInput> {
   return {
     default: { fg: p.text }, 'markup.heading': { fg: p.accent, bold: true }, 'markup.strong': { bold: true },
@@ -83,6 +83,8 @@ export class MorphessTui {
   #modelRequest?: AbortController;
   #queryAction?: (value: string) => void;
   #modeQueue = Promise.resolve();
+  #clipboard?: ClipboardService;
+  #copyAbort?: AbortController;
 
   constructor(readonly renderer: CliRenderer, readonly client: Client, readonly options: TuiOptions = {}) {
     this.#state = client.state; this.#session = client.state.sessionId;
@@ -144,6 +146,7 @@ export class MorphessTui {
       rememberDraft(this.#prefs, this.#session, this.composer.plainText); this.saveSoon();
     };
     renderer.keyInput.on('keypress', this.onKey); renderer.on(CliRenderEvents.RESIZE, this.resize);
+    renderer.on(CliRenderEvents.SELECTION, this.onSelection);
     this.#off = client.subscribe((state) => this.update(state));
     this.resize(); this.update(this.#state); this.composer.focus();
     if (this.#launchMark) {
@@ -326,7 +329,7 @@ export class MorphessTui {
       { name: 'Toggle inspector', description: 'Context, usage and plan · Ctrl+B', run: () => this.toggleSidebar() },
       { name: 'Change theme', description: 'Forest, light, or high contrast', run: () => this.showThemes() },
       { name: 'Toggle thinking', description: 'Show or collapse retained model reasoning', run: () => { this.#prefs.thinking = !this.#prefs.thinking; this.invalidateRows(); this.saveSoon(); } },
-      { name: 'Copy last answer', description: 'Send selected text or the last answer to terminal clipboard · Ctrl+Y', run: () => this.copyAnswer() },
+      { name: 'Copy selection or last answer', description: 'Copy text · Cmd+C / Ctrl+Shift+C / Ctrl+Y', run: () => this.copyAnswer() },
       { name: 'Stop current work', description: 'Abort the current ownership subtree · Escape', run: () => this.client.abort() },
       ...(this.#state.questions.length ? [{ name: 'Read pending question', description: 'Full question and all suggested answers · Ctrl+R', run: () => this.showQuestion() }] : []),
       { name: 'Keyboard shortcuts', description: 'Commands, multiline editing and navigation', run: () => this.showHelp() },
@@ -466,12 +469,35 @@ export class MorphessTui {
     if (!question) { this.notify('There is no pending question.'); return; }
     this.showText(`Question · session ${question.conversationId}`, `${question.question}\n\n${question.options.map((option, index) => `${index + 1}. ${option}`).join('\n\n')}\n\nEscape returns to the composer. Type a number or a freeform answer.`);
   }
-  private showHelp() { this.showText('Keyboard and commands', `Morphess is an independent, unofficial harness for Morph inference.\nIt is not developed, endorsed, sponsored, or backed by Morph.\n\nEnter          Send prompt or answer pending question\nShift+Enter    Add a new line\nShift+Tab      Cycle Code / Plan\nCtrl+P         Search commands\nCtrl+N         New session\nCtrl+O         Switch session\nCtrl+B         Toggle inspector (wide terminals)\nCtrl+T         Inspect tools\nCtrl+Y         Copy selection or last answer\nCtrl+R         Read full pending question and choices\nCtrl+U         Clear composer\nUp / Down      Recall prompt history when composer is empty\nPageUp/Down    Scroll transcript or detail view\nEscape         Close a menu; otherwise stop current work\nCtrl+C         Stop work, or quit when idle\nCtrl+Q         Quit and preserve unfinished work\n\n/new  /sessions  /fork [entry]  /compact\n/mode  /code  /plan  /build (alias)  /model [id]  /codemode  /permissions  /errors  /abort  /diff  /tools  /catalog  /provider  /files [query]\n/attach /path/to/image.png  /theme [forest|light|contrast]\n/thinking  /answer text  /help  /quit\n\nCode mode enables edits and tools. Plan mode uses read-only tools. Shift+Tab cycles them.\n/model opens the authenticated provider catalog; selected profiles persist per session.\nThe codemode JavaScript tool is available in Code mode when enabled in configuration.\nHost shell access still requires explicit --trusted or trusted configuration.\nAccepted work is durable. Closing the UI preserves unfinished tasks.\nType a number to select a suggested answer, or give a freeform reply.`); }
+  private showHelp() { this.showText('Keyboard and commands', `Morphess is an independent, unofficial harness for Morph inference.\nIt is not developed, endorsed, sponsored, or backed by Morph.\n\nEnter          Send prompt or answer pending question\nShift+Enter    Add a new line\nShift+Tab      Cycle Code / Plan\nCtrl+P         Search commands\nCtrl+N         New session\nCtrl+O         Switch session\nCtrl+B         Toggle inspector (wide terminals)\nCtrl+T         Inspect tools\nMouse release  Copy selected text\nCmd+C / Ctrl+Shift+C / Ctrl+Y  Copy selection or last answer\nCtrl+R         Read full pending question and choices\nCtrl+U         Clear composer\nUp / Down      Recall prompt history when composer is empty\nPageUp/Down    Scroll transcript or detail view\nEscape         Close a menu; otherwise stop current work\nCtrl+C         Stop work, or quit when idle\nCtrl+Q         Quit and preserve unfinished work\n\n/new  /sessions  /fork [entry]  /compact\n/mode  /code  /plan  /build (alias)  /model [id]  /codemode  /permissions  /errors  /abort  /diff  /tools  /catalog  /provider  /files [query]\n/attach /path/to/image.png  /theme [forest|light|contrast]\n/thinking  /answer text  /help  /quit\n\nCode mode enables edits and tools. Plan mode uses read-only tools. Shift+Tab cycles them.\n/model opens the authenticated provider catalog; selected profiles persist per session.\nThe codemode JavaScript tool is available in Code mode when enabled in configuration.\nHost shell access still requires explicit --trusted or trusted configuration.\nAccepted work is durable. Closing the UI preserves unfinished tasks.\nType a number to select a suggested answer, or give a freeform reply.`); }
   private toggleSidebar() { this.#prefs.sidebar = !this.#prefs.sidebar; this.resize(); this.saveSoon(); if (this.renderer.width < 110 && this.#prefs.sidebar) this.notify('Inspector appears at 110 columns or wider.'); }
-  private copyAnswer() {
-    const text = this.renderer.getSelection()?.getSelectedText() || this.#state.entries.filter(entry => entry.role === 'assistant').at(-1)?.text;
+  private onSelection = (selection: Selection) => {
+    if (this.#closed || selection.isDragging) return;
+    const text = selection.getSelectedText();
+    if (text) this.run(() => this.copyText(text));
+  };
+  private async copyAnswer() {
+    const editor = this.paletteInput.focused ? this.paletteInput : this.composer.focused ? this.composer : undefined;
+    const text = editor?.getSelectedText() || this.renderer.getSelection()?.getSelectedText() || this.#state.entries.filter(entry => entry.role === 'assistant').at(-1)?.text;
     if (!text) { this.notify('No answer or selection to copy.'); return; }
-    this.notify(this.renderer.copyToClipboardOSC52(text) ? 'Copy request sent to your terminal clipboard.' : 'Terminal clipboard is unavailable.', false);
+    await this.copyText(text);
+  }
+  private async copyText(text: string) {
+    if (this.#closed) return;
+    this.#copyAbort?.abort();
+    const controller = new AbortController(); this.#copyAbort = controller;
+    try {
+      const clipboard = this.options.clipboard ?? (this.#clipboard ??= createClipboard({
+        host: createHostClipboard({ timeoutMs: 1500 }), terminal: createRendererClipboardAdapter(this.renderer),
+      }));
+      const result = await clipboard.writeText(text, { destination: 'best-available', signal: controller.signal });
+      if (this.#closed || controller.signal.aborted) return;
+      if (result.host.status === 'written') this.notify('Copied to clipboard.');
+      else if (result.terminal.status === 'attempted') this.notify('Copy request sent to your terminal clipboard.');
+      else this.notify('Clipboard unavailable. Check terminal clipboard permissions or use morphess export.', true);
+    } catch {
+      if (!this.#closed && !controller.signal.aborted) this.notify('Clipboard unavailable. Check terminal clipboard permissions or use morphess export.', true);
+    } finally { if (this.#copyAbort === controller) this.#copyAbort = undefined; }
   }
   private setTheme(name: ThemeName) {
     this.#prefs.theme = name; this.#theme = THEMES[name]; const p = this.#theme;
@@ -496,6 +522,9 @@ export class MorphessTui {
     const consume = () => { key.preventDefault(); key.stopPropagation(); };
     if (key.eventType === 'release') return;
     if (this.#launchMark) { clearTimeout(this.#launchTimer); this.#launchMark = false; this.update(this.#state); }
+    if ((key.name.toLowerCase() === 'c' && (key.super || key.meta || (key.ctrl && key.shift))) || (key.ctrl && key.name === 'y')) {
+      consume(); this.run(() => this.copyAnswer()); return;
+    }
     if (key.name === 'tab' && key.shift) { consume(); if (this.#overlay) this.closeOverlay(); this.run(() => this.cycleMode()); return; }
     if (this.#overlay) {
       if (key.name === 'escape' || (key.ctrl && key.name === 'p')) { consume(); this.closeOverlay(); return; }
@@ -512,7 +541,7 @@ export class MorphessTui {
     if (key.ctrl) {
       const action: Record<string, () => void | Promise<unknown>> = {
         p: () => this.showCommands(), o: () => this.showSessions(), n: () => this.client.newSession(),
-        b: () => this.toggleSidebar(), t: () => this.showTools(), y: () => this.copyAnswer(),
+        b: () => this.toggleSidebar(), t: () => this.showTools(),
         r: () => this.showQuestion(),
         q: () => this.options.onExit?.(), u: () => this.composer.clear(),
         c: () => this.#state.busy ? this.client.abort() : this.options.onExit?.(),
@@ -545,8 +574,12 @@ export class MorphessTui {
     this.#modelRequest?.abort();
     if (this.#closed) return; this.#closed = true; clearTimeout(this.#saveTimer); clearTimeout(this.#launchTimer);
     rememberDraft(this.#prefs, this.#session, this.composer.plainText); this.save();
+    this.#copyAbort?.abort();
     this.#off(); this.renderer.keyInput.off('keypress', this.onKey); this.renderer.off(CliRenderEvents.RESIZE, this.resize);
-    await this.#saveQueue; this.root.destroyRecursively(); this.#syntax.destroy(); this.#rows.clear();
+    this.renderer.off(CliRenderEvents.SELECTION, this.onSelection);
+    await this.#saveQueue;
+    try { await this.#clipboard?.dispose(); }
+    finally { this.root.destroyRecursively(); this.#syntax.destroy(); this.#rows.clear(); }
   }
 }
 

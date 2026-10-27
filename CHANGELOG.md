@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.5 — 2026-10-27
+
+- Copy mouse-selected text on release and support Cmd+C, Ctrl+Shift+C, and Ctrl+Y in the transcript, composer, and detail views.
+- Use OpenTUI's native clipboard locally with OSC52 fallback; keep remote copying on the terminal side.
+- Preserve drafts and Ctrl+C stop/quit behavior, report copy failures, and cancel pending clipboard operations during shutdown.
+
 ## 0.2.4 — 2026-10-26
 
 - Added `--full-access` as an explicit trusted host-shell flag, including code mode calls, plus a reviewed TUI permission restart that preserves the selected session.
